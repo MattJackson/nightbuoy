@@ -1,238 +1,132 @@
-# NightBuoy: master architecture and product vision
+# NightBuoy master architecture
 
-Updated: 2026-10-30. This is the single architecture source of truth. Normative requirements describe the intended product; the implementation matrix identifies what exists and what remains. The implementation is a security prototype under independent agent review, not a production release or professionally audited security system. Completion requires a usable deployment with real enrollment, authenticated reading, posting and independently recoverable encrypted history.
+Updated: 2026-10-30. This is the single architecture source of truth. It supersedes the former database/validator-first default. Requirements below describe the approved portable design; the implementation matrix separates working code from work in progress. NightBuoy is pre-release software, not a professionally certified anonymity or security system.
 
-## 1. The community survives its website
+## 1. Product and ownership
 
-NightBuoy is a standalone, open-source community forum. A community is identified by signed records and a cryptographic fingerprint, not its first domain, original operator, forge account, database or vendor. If `abc.com` disappears, participants should be able to resume the community at another HTTPS address or a Tor onion service, sign in again, unlock their keys, read surviving discussions and attachments, and continue posting without contacting `abc.com`.
+NightBuoy is a portable encrypted forum client. **No permanent frontend or local database is required. The durable forum lives in encrypted data on independently owned storage backends.** A client can run temporarily on a computer or from read-only media, expose a private local browser UI, connect to a forum, verify/decrypt history and submit signed encrypted changes. Closing every frontend must not destroy remotely confirmed forum data.
 
-Independent ownership matters as much as copying. The target is dozens of independently owned archive backends, potentially fifty or more. One administrator or storage operator must not possess credentials capable of erasing every copy. Removing a destination from one deployment's configuration stops that deployment's transfers; it never commands another owner to destroy retained history. Encryption keys and recovery material are separate from archive copies.
+The same application can remain running as a personal service or be hosted behind HTTPS/Tor for other people. Always-on instances provide convenience, optional replication work and optional authenticated write relaying. They do not acquire community ownership, administrator immunity or extra votes by remaining online. Backends themselves must remain reachable for remote reads/writes. A physically disconnected client can read only data it already has; unsent changes require an encrypted export or explicitly chosen writable outbox to survive exit.
 
-“No loss” is a durability statement with prerequisites. The latest confirmed records, attachments, membership/key envelopes and verification material must have reached a surviving copy. A hash cannot reconstruct missing bytes. A user's unsent draft cannot be recovered from someone else's archive. The application must distinguish a local draft, a pending submission, a consensus-confirmed post and a confirmed independent archive copy.
+The OEM product is NightBuoy only. Its five local palettes are Light, Dark, Midnight, Paper and High Contrast. Optional organization branding is a separate post-install public-assets bundle. Customer branding never belongs in the OEM installer or core image, and never changes signed forum data or permissions.
 
-The OEM installation is NightBuoy only. Its five built-in palettes are Light, Dark, Midnight, Paper and High Contrast. Optional organization branding is a separate public-assets bundle applied after installation; no customer brand names, assets or choices are shipped in the core image.
+## 2. Experience
 
-## 2. Security, privacy and user experience
+1. Launch NightBuoy. A personal launcher binds its UI to loopback, normally localhost:8080.
+2. Open an existing forum connection file, or choose storage backends to create a new forum.
+3. Import an encrypted identity/portable kit and unlock it locally. New members create an identity and request membership.
+4. Fetch encrypted objects from reachable backends; verify fingerprints, signatures, membership history and the selected branch before decrypting.
+5. Encrypt/sign posts on the user's device and publish through the selected branch's active write backend.
+6. See remote confirmation and replica availability as separate states. Export pending work before closing an ephemeral session.
 
-All discussion reading requires sign-in and authorized decryption keys. Public visitors may see the application shell, public branding and a deliberately public community label. Board names/descriptions, topic titles, post bodies, replies, attachments and search results must not appear in the public HTML, URLs, logs, exports or storage-provider plaintext.
+A read-only USB can carry the executable, web assets, a public connection file and an encrypted identity. Read-only application media does not prevent remote posting. Browser and operating-system traces are separate from application persistence; a no-database mode is not a forensic no-trace guarantee.
 
-The forum should feel familiar: ordered boards, topics, replies, quoting, revisions, search, attachments, moderation and clear publication states. Deep links use opaque identifiers. Search operates over the member's decrypted local view. The reference client must work on mobile, support keyboard navigation, escape untrusted text and avoid fetching third-party fonts, avatars, analytics or remotely embedded post content.
+User-facing flows must explain connection, sign-in, access requests, additional devices, backups and restoration without requiring knowledge of SQLite, consensus engines, publication receipts or object-store APIs. Requirements that disable an action must be visible beside the affected fields.
 
-Privacy is required at every layer, but the product must name its boundaries:
+## 3. Components and durable state
 
-- Members use independent, random cryptographic identities per community and pseudonyms unrelated to a forge username or email. Reusing one community's identity in another is not the default.
-- Identity mapping, where forge enrollment is configured, is separately encrypted and excluded from replicated community archives. Being a moderator or ordinary community administrator must not automatically expose forge identities or infrastructure credentials.
-- The login handler necessarily observes the forge identity during that enrollment. A forge provider may correlate its own account and authorization activity. Local encryption cannot undo that observation.
-- A direct network connection exposes some addressing information to the receiving operator. Tor/appropriate relays are necessary when the real host or client address must be hidden from that peer. Omitting fields from an admin panel is not network anonymity.
-- Stable community public keys, opaque object relationships, roles, sizes, epochs, ordering and timing/access patterns are verification metadata in the current protocol. They can correlate activity even though names and content are encrypted. Further metadata minimization is a requirement, not an implemented anonymity guarantee.
-- A reader can retain plaintext and old keys. Revocation cannot erase screenshots or previously acquired information. A malicious frontend, browser extension, endpoint compromise or untrusted recovery tool can steal keys or plaintext.
-
-Anyone may distribute a compatible frontend. This does not make arbitrary frontend code safe to receive private keys. Members need a trusted client distribution and independently verifiable community fingerprints/checkpoints. A replacement domain's TLS certificate proves that domain's control, not that its JavaScript is trustworthy. Signed/reproducible client distribution and a usable trust-pinning workflow remain release gates.
-
-## 3. Independent roles and trust boundaries
-
-| Role | Responsibility | What it does not acquire automatically |
+| Component | Responsibility | Persistence |
 | --- | --- | --- |
-| Member | Hold community identity keys; decrypt granted epochs; sign authorized contributions | Other members' forge identities or administrator authority |
-| Moderator | Moderate content under community policy | Forge mappings, backend credentials or permanent ownership |
-| Administrator | Sign admission, roles, key grants, publisher approvals and policy changes | Ownership of independently operated servers/copies or immunity from revocation |
-| Frontend | Present a verified, authorized client view | Publication authority, membership or decryption keys merely by hosting |
-| Approved publisher | Deliver member-signed candidate changes under an approved backend key | Permission to impersonate users or grant itself roles |
-| Validator | Participate in agreement on valid ordered transactions under the selected branch's validator trust | Content decryption, membership or more power because it runs extra archive copies |
-| Archive backend | Preserve/serve opaque encrypted history and required verification/key-envelope data | Publication authority, votes, membership or plaintext keys |
-| Local operator | Configure its own process, credentials, storage and routing | Global control over every community participant |
+| Browser UI | Identity unlocking, encryption/decryption, signatures, local search and forum interaction | RAM by default in portable mode; explicit encrypted exports/remember options |
+| Rust companion | Serve local/hosted UI, provider transports, protocol validation, conditional publication and copying | Transient sessions and bounded caches; no required data directory or SQLite database |
+| Storage backends | Preserve encrypted immutable objects and branch discovery heads | Durable remote storage, independently owned |
+| Optional worker/host | Copy verified objects, provide availability and authenticated provider access | Optional; never the only durable copy by design |
+| Connection file | Locate a community/branch and known backends; carry trust/checkpoint information | User-owned portable file; public export contains no credentials |
+| Encrypted identity/kit | Member keys and optionally that user's private backend access | User-owned authenticated encrypted file; never shared as a forum connection file |
 
-These roles may coexist on one machine, but their authority must remain separate. An S3 bucket is storage, not an identity provider. A forge repository may be storage while a distinct OAuth integration handles enrollment. Storage authorization does not configure an OAuth application or its callback.
+Remote data includes signed genesis, member/admin changes, encrypted posts/attachments, encrypted key grants, signed append certificates and verification material. Sessions, provider-account mappings, private member keys, passphrases and plaintext search indexes are never replicated as forum objects.
 
-## 4. Permissionless read-only participation
+Application-owned caches are replaceable projections. Losing a cache must not lose remotely confirmed history. The existing SQLite server and CometBFT network are legacy compatibility/test paths, not the new default. Existing databases/validator signing state must not be reset or silently relabeled as portable storage.
 
-Anyone can create a read-only frontend or backend without community-administrator approval. Such deployments must not register themselves in a community-wide inventory, trigger administrator notifications or attach a permanent owner/member identity merely to copy or serve ciphertext.
+## 4. Identity, permissions and keys
 
-A private pull backup need not announce its existence. Its owner keeps source/destination credentials and routing configuration locally. A read-only frontend still requires the normal member authentication and key-unlock path to render plaintext. Neither serving public application assets nor possessing an encrypted archive permits plaintext reading.
+A member has a portable signing key and a separate encryption/wrapping key. The current primitives remain browser P-256 signatures, RSA-OAEP-3072 key wrapping, AES-256-GCM content encryption and Argon2id-protected encrypted recovery files. Native validation and browser validation must agree on protocol rules and encodings. Do not invent a cryptographic primitive or use application hash links as a substitute for authentication.
 
-No protocol can guarantee that a publicly advertised website or observed connection is undiscoverable. The guarantee is no mandatory administrator registration/inventory and no automatic disclosure through community administration APIs. A server performing an explicitly configured push necessarily knows its own destination; this operator-local fact must not become a global administrator directory.
+Public identity is pseudonymous and normally unique per community. Forge account enrollment is optional; portable key possession must support ordinary sign-in without the original domain, OAuth issuer or original frontend. Passkeys are not a mandatory identity dependency. A hosted client distributing malicious JavaScript can steal unlocked secrets; trusted client distribution and user choice of frontend remain part of the threat model. A local executable/embedded client can remove dependency on a mutable remote frontend, but does not protect against a compromised host.
 
-Recovery and public verification must not depend on a list containing every private copy. Dashboard counts refer only to known, reachable, voluntarily advertised participants. They never represent a complete worldwide inventory.
+Members require admission and encrypted grants before decrypting content. Administrator approval and history-sharing are explicit community choices. Administrators are peers; the founder has no permanent owner status. A revocation advances the encryption epoch and grants future keys only to remaining active identities. Copied plaintext and previously issued keys cannot be erased retroactively. Session expiry/logout must lock plaintext and discard in-memory key references; forensic secure erasure is not promised.
 
-## 5. Two-way approval without connection disclosure
+## 5. Remote object log and confirmation
 
-Publication requires explicit community approval of a pseudonymous backend signing key. Approval applies to capabilities, not to the owner's real identity, forum membership or physical infrastructure.
+Storage is an adapter interface: bounded read, immutable object creation and conditional head replacement. Initial providers are GitHub, Forgejo, S3-compatible storage and a directory adapter for explicit local/offline copies and tests. More providers may be added without changing forum permissions or encryption. A backend unable to provide the required conditional-write semantics is a replica/read source, not an active write backend.
 
-| Community administrators may see | Kept local to the backend owner or necessary routing peers |
+A connection identifies a storage namespace, not a local database path. Namespace objects are content-addressed. A branch head points to a signed append certificate, which links the previous certificate and one immutable signed forum transaction. The certificate binds community, branch, active storage identity, sequence, previous object, transaction digest and signing member. Genesis establishes the root. Verification replays the complete authenticated ancestry and current permissions; a hash, discovery pointer or HTTP success alone does not establish valid history.
+
+For each branch, exactly one explicitly selected backend provides the active conditional head operation. Concurrent writers read its current head, construct/validate a candidate, sign its exact parent binding and conditionally advance the head. A losing writer refreshes and retries; governance/epoch/revision changes may require a newly encrypted or reauthorized candidate. Ordinary simultaneous posts should not create user-visible branches.
+
+A contribution is remotely stored only after its immutable objects and conditional head publication have succeeded and the accepted head/history has been verified. Copy confirmation is tracked separately per known destination. Failed/ambiguous writes remain pending until refreshed; retries must be idempotent and must never falsely report confirmation. No locally committed SQLite row substitutes for a remote acknowledgement.
+
+The initial implementation also stores a complete certified archive snapshot at every confirmed append to make cold retrieval straightforward. Immutable transaction/header objects are separately retained. This has quadratic cumulative snapshot storage cost and a 64 MiB complete-archive cap; incremental packing/checkpoint compaction is future work. A confirmed snapshot is verified in full, not trusted because it came from a provider.
+
+## 6. Trust tradeoff and failures
+
+**This portable model does not claim Byzantine quorum finality.** A selected provider's correct conditional-write behavior serializes ordinary concurrent writes. Member-signed parent links prevent storage from inventing member actions or silently rearranging an already signed path. A malicious provider can censor, withhold, roll back or present different legitimate signed proposals to different readers. Pinned checkpoints and comparisons with independent copies detect incompatible histories when the evidence becomes available; a fresh client with an old checkpoint cannot prove global freshness from signatures alone.
+
+There is no automatic primary election based on replica count. If the write backend is unavailable, existing copies can support reading, while new contributions remain pending. Explicitly choosing another writable backend/branch requires a verified checkpoint, appropriate surviving identity, a signed transition, future-key rotation and informed client selection. The original branch stays intact. Deliberate branches never merge automatically.
+
+A compatible prefix is lag, not a fork. Unknown/unreachable participants are not votes. Invalid signatures are invalid data, not another valid branch. Observation counts describe reachable known sources; they do not prove independent ownership or legitimacy. Private read-only copies are not globally counted.
+
+## 7. Backend identities, access and privacy
+
+Forum membership and storage-provider permission are separate. Member keys authorize forum actions. Provider credentials authorize transport to a particular repository/bucket/namespace. A forum connection file must never contain a shared master storage token, member private keys or an OAuth secret.
+
+The current portable implementation accepts provider access for the session only. Explicit private profiles and credentials authenticated inside an encrypted portable kit are planned extensions. Secrets are bound to the exact backend identity/location so tampering with a connection cannot redirect an existing credential to another destination. Future optional hosted write relays must retain their operator credentials privately, verify member authorization and exact signed candidates before publication, and expose no arbitrary storage-write/delete endpoint. A permanent relay must not be required when a user has suitable direct provider permissions.
+
+Granting forum membership does not magically grant GitHub/S3 permissions. The UI must explain whether a member uses their own scoped backend access or an optional authorized relay. It must not give ordinary members an owner's unrestricted token. Independent owner credentials are essential: a credential that can erase every copy defeats the durability model. Provider ACLs/version retention and append/conditional-write capabilities need real acceptance tests.
+
+Approved writable backends are represented by opaque identities/capabilities in signed governance. Physical routes, account labels, credentials, replication destinations and private read-only inventory remain operator/profile-local. A direct requester necessarily learns the endpoint it contacts; Git repository owner names can identify an account. Anonymity against the provider or endpoint peer is not guaranteed. Pseudonymous storage accounts, Tor and optional relays can reduce particular exposures; they do not create absolute anonymity.
+
+Any person can copy verified encrypted data or run a read-only client without administrator registration, approval or notification. New two-way write authority needs explicit administrator approval. Installing a frontend alone grants none.
+
+## 8. Replication and recovery
+
+Replication copies encrypted immutable transactions/certificates and only advances a destination head along a verified compatible history. Read back and verify stored bytes. Never overwrite a conflicting branch or silently replace another community. Interrupted copies can be retried; missing bytes cannot be recreated from their hashes. Backend-specific quotas and failure behavior must be visible to the owner without publishing private connection details to forum administrators.
+
+Any online client or optional worker can perform authorized replication. Providers do not synchronize merely because a connection lists them. Adding a backend performs capability/access checks and initial copy; removing one connection cannot delete independently owned copies. The UI must show local session/cache state, active remote write status, verified available copies, lag/conflict and pending work distinctly.
+
+With every frontend stopped, start a new client, import the connection and encrypted identity, retrieve surviving objects, verify and resume. A read-only/offline backup preserves only the checkpoint it received. Recovery from an unavailable/rogue write provider creates an explicit new branch as described above. Legacy consensus archives require a verified old quorum certificate and an explicit member-signed migration boundary; no ordinary policy update may downgrade their trust scheme.
+
+## 9. Transport, local launch and hosted mode
+
+A personal launcher binds only to loopback. Localhost UI transport is a private local-process exception to the prohibition on clear public HTTP. Remote provider traffic and public hosted frontends require HTTPS or authenticated Tor v3 transport. A non-loopback cleartext application listener must not be advertised as secure. Hosted deployments may use a private internal listener behind protected ingress.
+
+All applicable outbound HTTP/storage SDKs must honor the selected SOCKS/Tor path or fail closed; proxying one library does not proxy another. Redirects and remote assets must not bypass the privacy path. The portable path has no CometBFT peer network to expose accidentally. The UI includes no analytics or externally loaded branding assets.
+
+Companion APIs require exact Host/Origin handling, CSRF protection and bounded input. Hosted sessions isolate identities, connections and credentials. The pilot caps one companion at 32 sessions for eight hours and at two reserved active sessions per verified member; arbitrary key proofs do not reserve capacity. It is not DDoS protection or a large public hosting capacity claim. Arbitrary backend configuration must not become a public SSRF/open-proxy interface: hosted deployments use operator-approved connection endpoints; unrestricted connection entry belongs to the personal loopback launcher. Private APIs never expose plaintext keys or raw provider credentials.
+
+## 10. Packaging and compatibility
+
+Default packaging is one lightweight client/companion process plus embedded/static web assets, with no mandatory database volume or four-node network. A read-only-media build carries the executable/assets and user-supplied portable files. Always-on/public hosting is optional. OEM branding stays NightBuoy; separate post-install branding supplies only validated public metadata/CSS/images and does not fork application code.
+
+Preserve the existing forum and its signing state during implementation. Legacy mode remains explicitly identifiable and can read/export old archives. Migration is opt-in and must retain the old verified history, identity, grants and attachments, while recording the change in trust/ordering model. No automatic schema rewrite, volume deletion, root replacement or silent downgrade is allowed.
+
+## 11. Implementation and acceptance matrix
+
+This matrix is deliberately conservative while the portable refactor is in progress.
+
+| Area | Evidence/status at architecture transition |
 | --- | --- |
-| Random backend label and public-key fingerprint | Real identity, forge account or mandatory association with a member |
-| Requested capabilities and approval/revocation state | Repository/bucket coordinates and internal paths |
-| Proof of key possession and protocol compatibility | Tokens, passwords, OAuth secrets and private keys |
-| Verified history/checkpoint and bounded health status | Private IP addresses, local configuration and unrelated private backups |
+| Encryption, portable identity, epoch grants, revocation | Existing implementation and regression suite; retain and extend |
+| Forum CRUD, attachments, moderation and search | Existing reference UI; preserve behavior |
+| Five OEM palettes, separate post-install branding | Implemented and browser-tested; OEM source/runtime checked for customer-brand references |
+| Passphrase validation feedback | Inline minimum/mismatch/missing setup requirement feedback; browser regression |
+| Legacy consensus/server compatibility | Existing tested SQLite/CometBFT implementation; no longer the intended default |
+| Remote append certificates and conditional publication | Implemented in native/browser replay and GitHub/Forgejo/S3 conditional adapters; HTTP/SDK fixture races tested; live GitHub synthetic branch race passed and branch removed |
+| No-database transient launcher and isolated sessions | Implemented; RAM-only session state, no Store::open; cold restart/read-only working directory tested |
+| Backend-first creation/opening and connection files | Implemented; destination review, secret clearing, branch/head pins and credential-free export |
+| Private kit/provider access and membership handoff | Session-only provider access; separate encrypted identity + public connection; signed membership request export/import. Combined private credential kits and operator relays remain unimplemented |
+| Remote replication and provider capabilities | Explicit private backup copy/readback; exact copied checkpoint; compatible replica fallback. No automatic background sync/election; live provider ACL/retention acceptance remains open |
+| Zero-frontend recovery | Provider fixture tests stop every companion and cold-start in empty read-only working directories; history remains available remotely |
+| Read-only-media launch | Executable embeds assets built before Rust; tests launch from read-only empty working directories and assert no state files |
+| Legacy migration | Explicit reset with old quorum-proven anchor; code present, full cross-mode acceptance is still required. Portable → legacy ordering is forbidden |
+| Security assurance | Fresh independent portable static audit and iterative remediation; evidence and remaining gates in docs/AUDIT.md; no professional certification |
 
-Administrators may approve or revoke a publisher's ability to submit candidates. They cannot remotely delete its retained history or confiscate its storage. Member signatures and current permissions remain mandatory for each accepted transaction.
+Required checks include two concurrent clients posting through real conditional writes; stale/malformed/unauthorized inputs; revoked-member attempts; connection/credential redirection; rollback/fork detection; corrupt/missing objects; interrupted writes and duplicate retries; loss of the primary with explicit recovery; all frontends stopped then cold restart; read-only execution; and no plaintext/private-key/credential leakage into remote objects, logs or public exports. Provider integration and failure tests supplement protocol/unit/browser tests.
 
-Transport addresses are a separate routing concern. A connecting peer needs some route, such as an onion address or relay handle, but those routes need not be replicated as part of the administrator approval record. Direct HTTPS cannot hide the destination from the operator connecting to it. Tor/outbound relay support is needed when revealing that address is unacceptable. Approval records must never contain credentials.
+Audit cycles must fix and regression-test critical/high findings, repeat adversarial checks and record evidence/remaining limits in docs/AUDIT.md. No finite test suite or agent review proves perfection, absolute anonymity or absence of unknown vulnerabilities. Production security claims require evidence appropriate to their scope.
 
-Publisher approval is separate from validator membership. Adding fifty encrypted backups grants no additional consensus votes. The current implementation has publisher key approval and a fixed validator set; the full anonymous capability-request, proof-of-control and private routing workflow remains unfinished.
+## 12. Supporting references
 
-## 6. Portable identity, sign-in and keys
+Provider conditional operations: [GitHub Contents API](https://docs.github.com/en/rest/repos/contents#create-or-update-file-contents), [S3 conditional writes](https://docs.aws.amazon.com/AmazonS3/latest/userguide/conditional-writes.html), [Forgejo API](https://forgejo.org/docs/latest/user/api-usage/). Each adapter must verify the actual supported semantics; interchangeable storage does not imply interchangeable consistency guarantees.
 
-### 6.1 Member-held identity
-
-A member's portable identity contains separate signing and wrapping keypairs. The prototype uses Web Crypto ECDSA P-256/SHA-256 for member signatures and RSA-OAEP 3072/SHA-256 to wrap group epoch keys. The public identity fingerprint is SHA-256 of the uncompressed signing public key. User-facing pseudonyms derive from that random per-community fingerprint, never a guessable forge username or email.
-
-The browser encrypts private key material in a local vault with AES-256-GCM. A unique long passphrase derives the wrapping key through Argon2id with 64 MiB memory, three iterations and four lanes. A downloaded encrypted recovery file carries the portable vault and authenticated recovery metadata. The passphrase and private keys must never reach a service, forge, archive or log. The implementation must authenticate the community, public keys and recovery checkpoint against vault tampering.
-
-Sign-in is a one-use, expiring challenge scoped to the community and deployment origin, signed by the member key. Sessions are local to a deployment and do not define community identity. Moving to a new domain may require sign-in and recovery import; it must not require the old domain or its session cookies.
-
-Passkeys and OTP are not the identity foundation. They may become optional local protections where compatible with portability and the threat model. Neither a forge login nor an OTP can recreate a lost encryption private key. Hardware-backed distinct-device credentials, individual device revocation and encrypted device-to-device enrollment remain future work; the prototype recovery file copies one identity's keypairs across devices.
-
-### 6.2 Forge enrollment policy
-
-The administrator chooses whether joining requires an approved forge account or permits a key-only identity; portable key-only enrollment is the privacy default. The prototype supports GitHub and Forgejo OAuth enrollment using state bound to an HttpOnly cookie, one-use expiring state, PKCE S256 and fixed callbacks. Normal existing-member recovery/sign-in uses portable key possession, so a forge outage need not disable an already enrolled identity.
-
-Forge identity uses the configured issuer instance and immutable account ID, not matching usernames or email. Account linking must never occur by matching those mutable values. OAuth credentials stay operator-local. The current implementation does not fetch forge avatars or use forge account names in posts. Private mappings use a keyed index and separate AES-GCM encryption under an operator-local identity key; archive exports omit mappings, sessions and OAuth secrets.
-
-### 6.3 Admission, history and revocation
-
-Setup asks the administrator to choose automatic versus approved membership, existing-history access and identity requirements. Automatic admission is not hidden key escrow: an unlocked authorized administrator client must grant keys. It must be clear when admission awaits such a client.
-
-Discussion content uses AES-256-GCM epoch keys with fresh 96-bit IVs. Encrypted payload authentication binds the routing/event fields as additional authenticated data. An administrator wraps epoch keys to each authorized identity's public wrapping key. The service and storage providers do not receive plaintext group keys.
-
-When a member is revoked, the same accepted control operation advances the epoch and supplies grants only to remaining active identities. Future posts require that current epoch and current authority state. Removing an administrator follows the same rule; the founder has no permanent owner privilege. The selected branch retains at least one administrator during ordinary administration. A separate explicit recovery branch can reset authority using a surviving active member identity at a retained checkpoint.
-
-Historical keys and copied content cannot be revoked retroactively. An isolated host may not have learned a revocation, so it must not independently confirm new posts without agreement. Client logout/session expiry must lock the visible view and clear in-memory keys/plaintext; encrypted local recovery material may remain. Forensic secure erasure is not promised.
-
-## 7. One agreed history during normal operation
-
-Hash links, signatures, replication and agreement have distinct jobs:
-
-- Hashes detect changed bytes and identify records.
-- Signatures prove key possession and permit authorization checks.
-- Replication copies complete accepted data and repairs gaps.
-- Consensus orders concurrent valid transactions and determines confirmation.
-
-Hash linking alone does not keep disconnected independent writers on one history. Ordinary simultaneous posting must not require human branch arbitration. NightBuoy therefore uses an established consensus engine rather than inventing a new voting protocol or treating storage replicas as voters.
-
-The prototype integrates **CometBFT 0.38.26** through ABCI++, using the compatible Rust Tendermint types/verifier at 0.41.0. A smaller explicitly trusted validator group orders transactions; approved publishers submit member-signed candidates. A post references the current governance checkpoint so two ordinary posts can be ordered without requiring the author to sign the other post's eventual position. The consensus block history commits the ordered application state.
-
-With four equally weighted, independently operated validators, more than two-thirds voting power means at least three must confirm a block. Safety assumes less than one-third Byzantine voting power; confirmation also needs sufficient reachable honest validators and suitable network progress. Four processes on one machine test behavior but do not provide independent ownership or protection against that machine's loss. More backup buckets do not improve a validator quorum.
-
-When confirmation is unavailable, the client must preserve an encrypted pending submission and label it pending. It must never show an unavailable quorum as a successful confirmed post. Receiving an RPC response alone is not sufficient portable evidence. The validator key set/chain ID must be bound to community trust, and a verified commit must bind the exact exported application state. Both native services and browser clients must verify this proof. A policy update must never silently remove or replace validator trust.
-
-The prototype's fixed validator set requires an explicit branch reset to change trust. Safe ongoing validator reconfiguration is not implemented. Confirmation guarantees do not mean every archive has copied the post at that instant. Reads must expose checkpoint/freshness limitations rather than imply global completeness.
-
-## 8. Deliberate permanent forks and explicit reset
-
-A lagging copy that contains a verified prefix is not a fork. Missing peers are unknown, not votes. Invalid signatures or altered objects are invalid data, not a competing legitimate branch. An incompatible signed history or an explicit authority reset is a branch decision.
-
-Participants may deliberately retain or resume an earlier valid checkpoint after a rogue administrator changes permissions, removes members or disconnects storage. Forks are permanent. There is no merge, longest-chain rule or automatic “most backends wins.” Selecting A, Z or creating B must explicitly choose a starting checkpoint and preserve unselected archives.
-
-A new branch must be bound to a distinct branch fingerprint and clearly explain changed administrator, publisher, validator and key-epoch state. A surviving member may reconstitute a branch only from a checkpoint where their identity was active. The new branch must cryptographically verify the selected old checkpoint, retain its ancestry, rotate future keys and require explicit client trust selection. It must not make an ordinary member an administrator on the old branch or be silently followed as normal catch-up.
-
-Administrator notifications should show the last common checkpoint, verified conflicting records, relevant content/permission differences available to that reader, known participant observations, last-seen times and missing data. Example: “12 reachable known participants report A; 6 report Z; 32 configured participants are unreachable/unknown.” These are observations, not proof of legitimacy or independent ownership. The explicit reset workflow is implemented. Automated peer-observation aggregation, notification deduplication and a full branch comparison UI remain future work; the reference client shows the selected reset branch fingerprint and requires explicit selection before decrypting it.
-
-An administrator's choice affects participants choosing that branch. No single administrator can force all independent deployments or users to follow it. A signed action can still be socially malicious while valid under the selected branch's permission rules; consensus does not decide whether an administrator's intention is good.
-
-## 9. Data and protocol contract in the prototype
-
-The community genesis is a compact, signed UTF-8 JSON array:
-
-```text
-["nightbuoy-genesis", 1, creatorPublicIdentity, initialPolicy,
- initialPublisherPublicKey, encryptedEpochKeyGrants]
-```
-
-Its exact body bytes hash to the community fingerprint. Initial policy includes validator trust when consensus is configured. JSON arrays have fixed field order; object keys in member-signed bodies are recursively sorted; signatures cover exact compact bytes. This is a constrained prototype encoding, not a claim of implementing every JCS numeric edge case.
-
-Control bodies have this form:
-
-```text
-["nightbuoy-control", 1, community, previousAuthorityCheckpoint,
- actorIdentity, nonce, operation, parameters]
-```
-
-Content event bodies have this form:
-
-```text
-[1, community, authorIdentity, authorityCheckpoint, epoch,
- kind, objectId, parentId, previousRevision, advisoryCreatedTime,
- iv, ciphertext]
-```
-
-The first ten content fields form AES-GCM additional authenticated data. Body SHA-256 identifies the transaction. Publisher receipts use Ed25519 and cover a domain-separated community/event identifier. UUID object IDs remain stable across frontend addresses. Wall-clock timestamps are advisory and cannot establish authority or ordering.
-
-Archives contain signed genesis, control records, publication records, their consensus-selected order and a portable commit proof. The application-state digest uses recursively sorted JSON object keys over the core archive and excludes the proof to avoid circular hashing. Member signatures, publisher approval, role rules, current epoch, parent type, revision predecessor and limits are replayed before acceptance. Duplicate delivery does not create duplicate posts or revive a removed object. Stale same-object revisions require an explicit reload/reconciliation.
-
-Malformed ciphertext cannot always be detected by a non-decrypting validator. The authorized client must isolate decryption/schema failures per record, retain the signed evidence, keep other discussions usable and offer moderation of the bad record. One corrupt historical payload must not disable all future reads.
-
-The native consensus-proof verifier is compiled to WebAssembly for the reference browser client. This reduces duplicated proof-verification logic; it does not by itself establish correctness or remove client-distribution trust. Browser authorization and archive parsing still require independent consistency tests against native behavior.
-
-## 10. Replication and durable storage
-
-Adapters separate identity, storage, transport and presentation. The current storage families are directory, GitHub, Forgejo and S3-compatible object storage. Adapters preserve the same portable encrypted records, independent of Git commit IDs, native issue numbers, provider timestamps or S3 ETags.
-
-The current prototype writes complete immutable archive snapshots at content-addressed paths and a mutable discovery pointer. The pointer is a hint; hashes, signatures, permission replay and confirmation proofs establish validity. Snapshots include encrypted attachments and key envelopes. Operators must not place private vaults, identity mappings, sessions, provider credentials or plaintext indexes in them.
-
-Configured destinations are bounded, asynchronous and checked by write/readback. The prototype limits a service to 128 configured destinations with eight concurrent transfers. A `consent` declaration and successful scoped access/readback are operator-local checks, not a globally published backup enrollment record. Private pull mirrors remain outside that configuration and community inventory.
-
-A divergent remote history must be retained/reported and never combined with the selected history. Unknown/missing/stale records trigger retry or repair, not fabricated acceptance. Revoking a publisher does not invalidate authentic previously accepted archives held by it. Credentials must grant only the destination access needed by its owner; one shared all-replica deletion credential is forbidden.
-
-Local SQLite currently stores accepted application state, consensus progress and sessions. The browser keeps pending signed ciphertext and a self-wrapped content key in IndexedDB before sending; it supports retry, draft review and encrypted export. The server does not claim a SQLite outbox. Private browsing or cleared browser storage can destroy unexported pending work. Application state and consensus checkpoint must commit atomically and be crash-recoverable. Rebuildable projections differ from secrets and unreplicated work. Aggregate archive limits must be enforced before consensus admission; accepting data that cannot be proofed/exported afterward is a correctness failure.
-
-Whole-archive snapshots, repeated replay and full-history client decryption are pilot limitations. Incremental content-addressed object exchange, bounded local projections, efficient attachment objects, inventory reconciliation at scale and server-side delivery queues remain engineering work. A prototype cap is not a claim of unlimited forum capacity.
-
-## 11. Deployment and transport
-
-Public user access must use trusted HTTPS or an authenticated Tor v3 onion service. Plain clearnet HTTP is rejected. HTTPS IP endpoints are allowed with a certificate the client trusts. An onion service may use an `http://…onion` URL while Tor supplies authenticated encrypted transport; this is distinct from clear HTTP to an internet IP. Loopback HTTP exists only in explicitly restricted automated test mode or private local process transport, not as a public deployment mode.
-
-Docker packages the Rust service, built Svelte client and local consensus integration, with explicit persistent volumes and operator-owned credentials. compose.production.yaml supplies HTTPS, validator/full-node and Tor profiles; a read-only service can omit consensus entirely. scripts/operator.mjs generates each operator’s keys locally, assembles public descriptors into a shared genesis and refuses to install over a previously used validator. It requires four descriptors by default; its single-validator override is for isolated packaging tests. Independently hosted frontend/non-voting service deployments must remain possible. Ingress, Tor routing and consensus RPC/ABCI interfaces need separate exposure rules. Internal consensus RPC and ABCI must not be exposed to arbitrary internet clients. Validator signing state must never be reset/reused in a way that causes double-signing.
-
-Fresh deployment presents Create community or Join/restore. A local one-use bootstrap token protects first administration. Setup chooses public origin, community policies, supported enrollment issuers, branding, storage and recovery settings. Restoring an existing live network differs from starting an explicitly selected new branch after all validators are lost. Neither operation may silently overwrite live consensus state. A fresh network accepts a recovery seed only while unconfigured, after replaying its embedded old checkpoint certificate, checking a distinct replacement chain and verifying the surviving member’s signed reset. The seed is then ordered and confirmed through the new network. Direct SQLite reset is restricted to loopback test mode. Production configurations use an 80 MiB consensus block limit, 64 MiB recovery transaction limit plus envelope space, and 128 MiB RPC/ABCI transport bounds to carry the bounded archive; ordinary encrypted events retain their smaller limit.
-
-For Tor deployments, every applicable outbound client must honor the chosen proxy/routing policy or fail closed. A proxy on one HTTP client does not cover another SDK's independent client. No DNS, redirect, asset or storage transfer should silently bypass the configured privacy path.
-
-Standalone domains, subdomains, path mounts, embedding, headless use and replaceable frontends are product goals. The current reference implementation serves one origin at `/`; path mounts, cross-origin/embedded integration are not implemented. Post-install branding uses a validated metadata manifest, local CSS and logo assets; it changes presentation per deployment without changing the signed forum history. The legacy policy presentation identifier is retained for archive compatibility and does not select branding.
-
-## 12. Implementation and release gates
-
-| Area | Current evidence/status |
-| --- | --- |
-| Browser encryption and portable encrypted vault | Implemented; authenticated recovery metadata, per-record malformed-content isolation and session-expiry locking have regression checks; independent re-review outstanding |
-| Boards/topics/replies/revisions/search/attachments/moderation | Implemented reference UI; bounded pilot behavior |
-| Forge OAuth enrollment | Implemented GitHub/Forgejo flow; local protocol fixture covers PKCE/state, not a live-provider credential smoke test |
-| Admission/history and peer admin revocation | Implemented; admission/history/revocation browser tests pass, including founder revocation |
-| Original-host-loss recovery | Independent-archive restore and a consensus-backed fresh-network branch test pass after all old validators stop |
-| Normal concurrent posts | Four-node CometBFT browser test passed with one agreed order and continued posting after original node shutdown |
-| Consensus proof | Native/WASM verifier implemented; browser trust-downgrade regressions pass; independent re-review outstanding |
-| Permissionless private read-only participation | Dedicated non-voting read-only mode; independent-origin key login, proof verification and unchanged community history are tested without administrator registration |
-| Anonymous two-way approval | Explicit public-key approval/revocation UI; no account/credential/route inventory. Backend possession is demonstrated by per-event publication signatures. Automated request/connection management remains future UX |
-| Archive adapters | 50 local archive destinations tested with one deleted and surviving copies verified; external provider-specific live tests and distributed-owner scale tests remain operator acceptance work |
-| Deliberate branch recovery | Fresh-network consensus recovery, forged-checkpoint rejection, new posting and explicit client branch choice tested; automated comparison/notifications remain future work |
-| Durable pending outbox | Encrypted IndexedDB outbox tested across quorum loss, page reload and successful retry |
-| HTTPS/Tor/Docker packaging | HTTPS development and production profiles tested, including separately provisioned non-voting frontend publication without adding a validator vote; independent-key operator tooling supplied. Real Tor service plus separate client verified key sign-in and decryption using automated Firefox; not an anonymity certification |
-| Security review | Initial independent agent audit completed; remediation evidence in docs/AUDIT.md; follow-up review blocked by review system, no professional certification |
-| License | MIT, selected by the project owner; standard repository/community documents follow the existing MIT repositories |
-
-Deployment readiness requires all of the following, not merely a green build:
-
-1. Real supported forge enrollment where enabled, portable key sign-in and correct topic return paths.
-2. No content/identity/private-key leakage through HTML, logs, caches, exported records, filenames or third-party requests.
-3. Concurrency tests proving one confirmed order across independent services, validator failure tests, quorum-loss pending behavior and durable crash/restart recovery.
-4. Removal tests proving no future key grants to revoked members/admins, including stale/replayed attempts.
-5. A fresh deployment at another HTTPS origin or onion address recovering complete history/attachments from an independent archive and member-held keys, with the original host absent.
-6. Explicit permanent branch/reset tests preserving old history and requiring informed client trust selection; no automatic merge or replica-count voting.
-7. Read-only participation without admin registration/inventory, and minimal-information two-way approval with credentials/routing privacy enforced at API boundaries.
-8. Docker/HTTPS/Tor deployment artifacts validated against actual builds, with narrowly exposed interfaces, safe permissions and documented upgrade/recovery behavior.
-9. Independent findings triaged and regression-tested; unresolved critical issues block release, and material remaining limitations are stated plainly.
-
-## 13. Implementation map and supporting evidence
-
-- `crates/server/src/model.rs`: signed community state, permissions, epochs, content validation, replay and branch rules.
-- `crates/server/src/consensus.rs`: CometBFT ABCI application, proposal validation, atomic acceptance and proof retrieval.
-- `crates/proof/src/lib.rs`: native/browser consensus commit verifier.
-- `crates/server/src/api.rs`: setup, challenge authentication, OAuth, sessions, authorization and HTTP security boundaries.
-- `crates/server/src/store.rs`: SQLite durability, local secrets and private identity mappings.
-- `crates/server/src/replication.rs`: encrypted archive adapters and operator-local transfer status.
-- `web/src/lib/crypto.ts`: member keys, encrypted vaults, epoch grants and content encryption.
-- `web/src/lib/protocol.ts`: browser authorization/history verification and WASM proof checks.
-- `web/src/App.svelte`: reference forum, setup, keys, administration and recovery UI.
-- `crates/server/tests/security.rs`, `tests/browser/forum.spec.ts`: executable security/behavior checks; test success is evidence within their coverage, not a general security proof.
-
-Protocol research and library documentation: [MLS/RFC 9420](https://www.rfc-editor.org/rfc/rfc9420.html), [Argon2/RFC 9106](https://www.rfc-editor.org/rfc/rfc9106.html), [Scuttlebutt](https://ssbc.github.io/scuttlebutt-protocol-guide/), [Briar](https://briarproject.org/how-it-works/), [Peergos](https://github.com/Peergos/Peergos), [CometBFT consensus specification](https://github.com/cometbft/cometbft/blob/v0.38.26/spec/consensus/consensus.md), [ABCI application requirements](https://github.com/cometbft/cometbft/blob/v0.38.26/spec/abci/abci%2B%2B_app_requirements.md), [GitHub OAuth](https://docs.github.com/en/apps/oauth-apps/building-oauth-apps/authorizing-oauth-apps), [Forgejo OAuth](https://forgejo.org/docs/latest/user/authentication/oauth2-provider/), [Tor onion services](https://community.torproject.org/onion-services/overview/index.html). These inform the design; they do not constitute an endorsement or audit of NightBuoy.
+Cryptography and transport: [Argon2/RFC 9106](https://www.rfc-editor.org/rfc/rfc9106.html), [secure contexts](https://www.w3.org/TR/secure-contexts/), [Tor onion services](https://community.torproject.org/onion-services/setup/). Legacy agreement uses the established CometBFT implementation; its old guarantees must not be claimed for the new provider-CAS branch model.

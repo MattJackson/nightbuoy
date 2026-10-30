@@ -496,3 +496,52 @@ async fn fifty_archive_destinations_survive_loss_of_one_without_public_inventory
         assert_eq!(Data::replay(&archive).unwrap().community(), community);
     }
 }
+
+#[test]
+fn portable_certificates_bind_inventory_and_cannot_downgrade_ordering() {
+    use nightbuoy::portable_protocol as portable;
+    let (key, dev) = device(11);
+    let primary = b64([21u8; 32]);
+    let genesis = signed(
+        &key,
+        json!(["nightbuoy-genesis",1,dev,{"name":"Portable","skin":"nightbuoy","admission":"approval","history":true,"identity":"key","portable":{"version":1,"primary":primary}},primary,grants(&[&dev],1)]),
+    );
+    let mut data = Data::create(genesis.clone()).unwrap();
+    assert!(Data::replay(&data.archive).is_err());
+    let body = portable::header_body(&data, &portable::Item::Genesis(genesis), "", 0).unwrap();
+    let header = signed(&key, serde_json::from_str(&body).unwrap());
+    data.archive.portable_proof = Some(portable::Certificate {
+        anchor: None,
+        headers: vec![header],
+    });
+    Data::replay(&data.archive).unwrap();
+    for consensus in [
+        Value::Null,
+        json!({"chain_id":"replacement","validators":[]}),
+    ] {
+        let reset = ctl(
+            &data,
+            &key,
+            &dev,
+            "reconstitute",
+            json!({"exclude":[],"publisher":b64([22u8;32]),"epoch":2,"grants":grants(&[&dev],2),"consensus":consensus}),
+        );
+        assert!(
+            data.clone()
+                .control(reset)
+                .unwrap_err()
+                .to_string()
+                .contains("cannot return to legacy ordering")
+        );
+    }
+    let mut bad = data.archive.clone();
+    bad.portable_proof.as_mut().unwrap().headers[0].signature = b64([0u8; 64]);
+    assert!(Data::replay(&bad).is_err());
+    let mut bad = data.archive.clone();
+    bad.portable_proof
+        .as_mut()
+        .unwrap()
+        .headers
+        .push(data.archive.portable_proof.as_ref().unwrap().headers[0].clone());
+    assert!(Data::replay(&bad).is_err());
+}

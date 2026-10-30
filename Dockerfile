@@ -23,16 +23,30 @@ FROM golang:1.27.3-bookworm AS consensus-build
 ENV GOBIN=/out CGO_ENABLED=0
 RUN go install github.com/cometbft/cometbft/cmd/cometbft@v0.38.26
 
-FROM debian:bookworm-slim
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates tini curl && rm -rf /var/lib/apt/lists/* && groupadd --gid 10001 nightbuoy && useradd --uid 10001 --gid 10001 --no-create-home nightbuoy && mkdir -p /data/app /app/web && chmod 700 /data/app && chown -R 10001:10001 /data /app
-COPY --from=rust-build /usr/local/bin/nightbuoy /usr/local/bin/nightbuoy
-COPY --from=consensus-build /out/cometbft /usr/local/bin/cometbft
-COPY --from=web-build /src/web/dist /app/web
+FROM rust-build AS portable-build
+COPY --from=web-build /src/web/dist /src/web/dist
+RUN --mount=type=cache,target=/usr/local/cargo/registry --mount=type=cache,target=/src/target cargo build --release --locked -p nightbuoy && cp target/release/nightbuoy /usr/local/bin/nightbuoy
+
+FROM debian:bookworm-slim AS runtime
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates tini curl && rm -rf /var/lib/apt/lists/* && groupadd --gid 10001 nightbuoy && useradd --uid 10001 --gid 10001 --no-create-home nightbuoy
+COPY --from=portable-build /usr/local/bin/nightbuoy /usr/local/bin/nightbuoy
 COPY LICENSE THIRD_PARTY_NOTICES.md /app/
-COPY docker/init-testnet.sh /usr/local/bin/nightbuoy-init-testnet
 USER 10001:10001
 WORKDIR /app
+ENV NIGHTBUOY_LISTEN=127.0.0.1:8080
+EXPOSE 8080
+ENTRYPOINT ["/usr/bin/tini", "--"]
+CMD ["nightbuoy", "portable"]
+
+FROM runtime AS legacy
+USER root
+RUN mkdir -p /data/app /app/web && chmod 700 /data/app && chown -R 10001:10001 /data /app
+COPY --from=consensus-build /out/cometbft /usr/local/bin/cometbft
+COPY --from=web-build /src/web/dist /app/web
+COPY docker/init-testnet.sh /usr/local/bin/nightbuoy-init-testnet
+USER 10001:10001
 ENV NIGHTBUOY_DATA=/data/app NIGHTBUOY_WEB=/app/web NIGHTBUOY_LISTEN=0.0.0.0:3000
 EXPOSE 3000
-ENTRYPOINT ["/usr/bin/tini", "--"]
 CMD ["nightbuoy"]
+
+FROM runtime AS portable

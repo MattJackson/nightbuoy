@@ -15,9 +15,18 @@ pub struct Policy {
     pub skin: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub consensus: Option<nightbuoy_proof::Trust>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub portable: Option<crate::portable_protocol::Ordering>,
 }
 impl Policy {
     pub fn validate(&self) -> anyhow::Result<()> {
+        if let Some(ordering) = &self.portable {
+            ordering.validate()?;
+            anyhow::ensure!(
+                self.consensus.is_none() && self.identity == "key",
+                "portable ordering cannot mix legacy consensus or forge enrollment"
+            );
+        }
         if let Some(trust) = &self.consensus {
             trust.validate().map_err(anyhow::Error::msg)?;
         }
@@ -121,6 +130,8 @@ pub struct Archive {
     pub order: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub proof: Option<nightbuoy_proof::Proof>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub portable_proof: Option<crate::portable_protocol::Certificate>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Data {
@@ -158,6 +169,7 @@ impl Data {
     pub fn core_bytes(&self) -> Vec<u8> {
         let mut a = self.archive.clone();
         a.proof = None;
+        a.portable_proof = None;
         serde_json::to_vec(&serde_json::to_value(&a).unwrap()).unwrap()
     }
     pub fn check_append_capacity<T: serde::Serialize>(
@@ -184,6 +196,9 @@ impl Data {
         hash(self.core_bytes())
     }
     pub fn verify_proof(&self) -> anyhow::Result<()> {
+        if self.view().policy.portable.is_some() {
+            return crate::portable_protocol::verify(self);
+        }
         if let Some(trust) = &self.view().policy.consensus {
             let proof = self
                 .archive
@@ -221,6 +236,9 @@ impl Data {
         policy.validate()?;
         let publisher = text(&a, 4)?.to_string();
         anyhow::ensure!(decode(&publisher)?.len() == 32, "invalid publisher key");
+        if let Some(ordering) = &policy.portable {
+            anyhow::ensure!(publisher == ordering.primary, "genesis backend mismatch");
+        }
         let member = Member {
             device: device.clone(),
             role: "administrator".into(),
@@ -249,6 +267,7 @@ impl Data {
                 records: vec![],
                 order: vec![],
                 proof: None,
+                portable_proof: None,
             },
             tip,
             views,
@@ -329,6 +348,7 @@ impl Data {
             }
         }
         d.archive.proof = a.proof.clone();
+        d.archive.portable_proof = a.portable_proof.clone();
         Ok(d)
     }
     pub fn control(&mut self, s: Signed) -> anyhow::Result<()> {
@@ -369,14 +389,34 @@ impl Data {
                 }
                 let new_trust: Option<nightbuoy_proof::Trust> =
                     serde_json::from_value(p.get("consensus").cloned().unwrap_or(Value::Null))?;
+                let portable: Option<crate::portable_protocol::Ordering> =
+                    serde_json::from_value(p.get("portable").cloned().unwrap_or(Value::Null))?;
                 anyhow::ensure!(
-                    v.policy.consensus.is_none() || new_trust.is_some(),
+                    v.policy.portable.is_none() || portable.is_some(),
+                    "portable branches cannot return to legacy ordering"
+                );
+                if let Some(ordering) = &portable {
+                    ordering.validate()?;
+                    anyhow::ensure!(
+                        new_trust.is_none() && p["publisher"] == ordering.primary,
+                        "invalid portable reset"
+                    );
+                }
+                anyhow::ensure!(
+                    (v.policy.consensus.is_none() && v.policy.portable.is_none())
+                        || new_trust.is_some()
+                        || portable.is_some(),
                     "production branch reset cannot remove consensus"
                 );
                 if let Some(trust) = &new_trust {
                     trust.validate().map_err(anyhow::Error::msg)?;
                 }
                 v.policy.consensus = new_trust;
+                v.policy.portable = portable;
+                if v.policy.portable.is_some() {
+                    v.policy.identity = "key".into();
+                }
+                v.policy.validate()?;
                 let excludes: Vec<String> = serde_json::from_value(p["exclude"].clone())?;
                 anyhow::ensure!(
                     !excludes.iter().any(|id| id == actor),
@@ -404,7 +444,7 @@ impl Data {
                 let policy: Policy = serde_json::from_value(p.clone())?;
                 policy.validate()?;
                 anyhow::ensure!(
-                    policy.consensus == v.policy.consensus,
+                    policy.consensus == v.policy.consensus && policy.portable == v.policy.portable,
                     "validator trust changes require an explicit branch reset"
                 );
                 v.policy = policy;
@@ -513,11 +553,18 @@ impl Data {
             v.publishers.contains(&r.publisher),
             "publisher not approved"
         );
-        verify_authority(
-            &r.publisher,
-            &receipt_bytes(&self.community(), &hash),
-            &r.receipt,
-        )?;
+        if let Some(ordering) = &v.policy.portable {
+            anyhow::ensure!(
+                r.publisher == ordering.primary && r.receipt.is_empty(),
+                "wrong portable write backend"
+            );
+        } else {
+            verify_authority(
+                &r.publisher,
+                &receipt_bytes(&self.community(), &hash),
+                &r.receipt,
+            )?;
+        }
         let epoch = a[4].as_u64().unwrap_or(0);
         anyhow::ensure!(
             epoch == v.epoch

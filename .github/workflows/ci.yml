@@ -35,4 +35,7 @@ jobs:
       - run: npm run check
       - run: npm run test:crypto
       - run: npx playwright install --with-deps chromium
+      - run: npm run build
+      - run: npm run test:portable
+      - run: npx playwright test --config playwright.portable.config.ts
       - run: npm test

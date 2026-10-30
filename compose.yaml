@@ -1,103 +1,15 @@
-name: nightbuoy-dev
-x-app: &app
-  image: nightbuoy:dev
-  build: .
-  restart: unless-stopped
-  read_only: true
-  tmpfs: [/tmp]
-  cap_drop: [ALL]
-  security_opt: [no-new-privileges:true]
-  environment: &environment
-    NIGHTBUOY_DATA: /data/app
-    NIGHTBUOY_CONSENSUS_RPC: http://127.0.0.1:26657
-    NIGHTBUOY_CONSENSUS_GENESIS: /data/comet/config/genesis.json
-    NIGHTBUOY_ABCI_LISTEN: 127.0.0.1:26658
-    NIGHTBUOY_WEB: /app/web
-    NIGHTBUOY_LISTEN: 0.0.0.0:3000
-  depends_on:
-    init:
-      condition: service_completed_successfully
-  healthcheck:
-    test: [CMD, curl, --fail, --silent, http://127.0.0.1:3000/healthz]
-    interval: 10s
-    timeout: 3s
-    retries: 12
+# Personal Linux launcher. Host networking binds only host loopback, with no data volume.
+# On macOS/Windows use `npm run dev:up` (native), or enable Docker host networking.
+name: nightbuoy-portable
 services:
-  init:
-    image: nightbuoy:dev
+  client:
+    image: nightbuoy:portable
     build: .
-    user: '0:0'
-    command: [nightbuoy-init-testnet]
-    volumes:
-      - node0:/nodes/node0
-      - node1:/nodes/node1
-      - node2:/nodes/node2
-      - node3:/nodes/node3
-  node0:
-    <<: *app
+    network_mode: host
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
     environment:
-      <<: *environment
-      NIGHTBUOY_PUBLIC_URL: https://localhost:${NIGHTBUOY_HTTPS_PORT:-8443}
-    volumes: [node0:/data]
-  node1:
-    <<: *app
-    environment:
-      <<: *environment
-      NIGHTBUOY_PUBLIC_URL: https://node1.localhost:${NIGHTBUOY_HTTPS_PORT:-8443}
-    volumes: [node1:/data]
-  node2:
-    <<: *app
-    environment:
-      <<: *environment
-      NIGHTBUOY_PUBLIC_URL: https://node2.localhost:${NIGHTBUOY_HTTPS_PORT:-8443}
-    volumes: [node2:/data]
-  node3:
-    <<: *app
-    environment:
-      <<: *environment
-      NIGHTBUOY_PUBLIC_URL: ${NIGHTBUOY_NODE3_PUBLIC_URL:-https://node3.localhost:${NIGHTBUOY_HTTPS_PORT:-8443}}
-    volumes: [node3:/data]
-  consensus0:
-    image: nightbuoy:dev
-    restart: unless-stopped
-    command: [cometbft, start, --home, /data/comet, --log_level, error, --rpc.laddr, 'tcp://127.0.0.1:26657']
-    network_mode: service:node0
-    depends_on: [node0]
-    volumes: [node0:/data]
-  consensus1:
-    image: nightbuoy:dev
-    restart: unless-stopped
-    command: [cometbft, start, --home, /data/comet, --log_level, error, --rpc.laddr, 'tcp://127.0.0.1:26657']
-    network_mode: service:node1
-    depends_on: [node1]
-    volumes: [node1:/data]
-  consensus2:
-    image: nightbuoy:dev
-    restart: unless-stopped
-    command: [cometbft, start, --home, /data/comet, --log_level, error, --rpc.laddr, 'tcp://127.0.0.1:26657']
-    network_mode: service:node2
-    depends_on: [node2]
-    volumes: [node2:/data]
-  consensus3:
-    image: nightbuoy:dev
-    restart: unless-stopped
-    command: [cometbft, start, --home, /data/comet, --log_level, error, --rpc.laddr, 'tcp://127.0.0.1:26657']
-    network_mode: service:node3
-    depends_on: [node3]
-    volumes: [node3:/data]
-  ingress:
-    image: caddy:2.10.2
-    restart: unless-stopped
-    ports: ['127.0.0.1:${NIGHTBUOY_HTTPS_PORT:-8443}:${NIGHTBUOY_HTTPS_PORT:-8443}']
-    environment:
-      HTTPS_PORT: ${NIGHTBUOY_HTTPS_PORT:-8443}
-    volumes:
-      - ./docker/Caddyfile.dev:/etc/caddy/Caddyfile:ro
-      - caddy:/data
-    depends_on: [node0, node1, node2, node3]
-volumes:
-  node0:
-  node1:
-  node2:
-  node3:
-  caddy:
+      NIGHTBUOY_LISTEN: 127.0.0.1:8080
+      NIGHTBUOY_PUBLIC_URL: http://localhost:8080
+    command: [nightbuoy, portable]

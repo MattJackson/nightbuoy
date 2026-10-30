@@ -160,6 +160,7 @@ fn s3_with_proxy(
         .with_secret_access_key(secret(&t.secret_key_file)?)
         .with_allow_http(testing || onion)
         .with_virtual_hosted_style_request(false);
+    let transport = crate::remote::s3_transport(proxy.as_deref())?;
     if let Some(proxy) = proxy {
         anyhow::ensure!(
             proxy.starts_with("socks5h://"),
@@ -167,7 +168,7 @@ fn s3_with_proxy(
         );
         builder = builder.with_proxy_url(proxy);
     }
-    Ok(builder.build()?)
+    Ok(builder.with_http_connector(transport).build()?)
 }
 
 async fn get(app: &App, t: &Target, path: &str) -> anyhow::Result<Option<Vec<u8>>> {
@@ -542,6 +543,7 @@ mod tests {
             records: vec![],
             order: vec![],
             proof: None,
+            portable_proof: None,
         };
         let result = target(
             &app,

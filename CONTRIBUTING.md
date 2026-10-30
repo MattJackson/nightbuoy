@@ -17,6 +17,9 @@ cargo test --workspace --locked
 npm ci
 npm run check
 npm run test:crypto
+npm run build
+npm run test:portable
+npx playwright test --config playwright.portable.config.ts
 npm test
 ```
 

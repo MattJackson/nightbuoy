@@ -13,10 +13,10 @@ export function docker(args,{capture=false,env={}}={}){
  const r=spawnSync(command,argv,{cwd:root,env:merged,encoding:'utf8',stdio:capture?'pipe':'inherit',maxBuffer:20*1024*1024});
  if(r.error)throw r.error;if(r.status!==0)throw Error(capture?(r.stderr||`Docker exited ${r.status}`):`Docker exited ${r.status}`);return r.stdout||'';
 }
-export function compose(args,{file='compose.yaml',...options}={}){
+export function compose(args,{file='compose.legacy.yaml',...options}={}){
  const base=['compose','--project-directory',root,'--file',resolve(root,file)];
  const explicitProject=args.includes('-p')||args.includes('--project-name');
- if(file==='compose.yaml'&&!explicitProject){const selected=resolve(root,'.dev/project');if(existsSync(selected)){const project=readFileSync(selected,'utf8').trim();if(!/^nightbuoy-dev[-a-z0-9]*$/.test(project))throw Error('Invalid local development project selector.');base.push('--project-name',project);}for(const name of ['certificates.compose.yaml','compose.override.yaml']){const override=resolve(root,'.dev',name);if(existsSync(override))base.push('--file',override);}}
+ if(file==='compose.legacy.yaml'&&!explicitProject){const selected=resolve(root,'.dev/project');if(existsSync(selected)){const project=readFileSync(selected,'utf8').trim();if(!/^nightbuoy-dev[-a-z0-9]*$/.test(project))throw Error('Invalid local development project selector.');base.push('--project-name',project);}for(const name of ['certificates.compose.yaml','compose.override.yaml']){const override=resolve(root,'.dev',name);if(existsSync(override))base.push('--file',override);}}
  return docker([...base,...args],options);
 }
 

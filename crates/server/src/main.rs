@@ -2,6 +2,13 @@ use nightbuoy::{api, config::Config, replication, store::Store};
 use std::sync::{Arc, Mutex};
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    if std::env::args().nth(1).as_deref() == Some("portable")
+        || (std::env::args().nth(1).is_none()
+            && std::env::var("NIGHTBUOY_DATA").is_err()
+            && std::env::var("NIGHTBUOY_CONSENSUS_RPC").is_err())
+    {
+        return nightbuoy::portable::run().await;
+    }
     let config = Config::load()?;
     if std::env::args().nth(1).as_deref() == Some("check-config") {
         println!("configuration valid");
