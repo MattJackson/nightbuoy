@@ -31,8 +31,13 @@ impl Policy {
             "public community label must be 1–80 bytes"
         );
         anyhow::ensure!(
-            matches!(self.skin.as_str(), "freemkv" | "nightbuoy"),
-            "unknown skin"
+            !self.skin.is_empty()
+                && self.skin.len() <= 40
+                && self
+                    .skin
+                    .bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-'),
+            "invalid legacy presentation identifier"
         );
         Ok(())
     }

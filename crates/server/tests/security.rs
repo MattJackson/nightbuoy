@@ -43,7 +43,7 @@ fn setup() -> (Data, SigningKey, Device, [u8; 32]) {
     let pubkey = [9u8; 32];
     let g = signed(
         &key,
-        json!(["nightbuoy-genesis",1,dev,{"name":"Public brand","skin":"freemkv","admission":"approval","history":true,"identity":"key"},b64(authority(&pubkey).verifying_key().to_bytes()),grants(&[&dev],1)]),
+        json!(["nightbuoy-genesis",1,dev,{"name":"Public brand","skin":"nightbuoy","admission":"approval","history":true,"identity":"key"},b64(authority(&pubkey).verifying_key().to_bytes()),grants(&[&dev],1)]),
     );
     (Data::create(g).unwrap(), key, dev, pubkey)
 }
@@ -149,7 +149,7 @@ fn membership_authority_and_rekey_exclusion() {
         &user_key,
         &user,
         "policy",
-        json!({"name":"hijacked","skin":"freemkv","admission":"automatic","history":true,"identity":"key"}),
+        json!({"name":"hijacked","skin":"nightbuoy","admission":"automatic","history":true,"identity":"key"}),
     );
     assert!(data.clone().control(unauthorized).is_err());
     assert!(
@@ -278,6 +278,7 @@ async fn anonymous_reads_csrf_and_bootstrap_takeover_are_rejected() {
         providers: vec![],
         testing: false,
         read_only: false,
+        branding: None,
         replicas: None,
     };
     let state = App {
@@ -392,6 +393,7 @@ async fn private_read_only_copy_rejects_publication_and_enrollment() {
             providers: vec![],
             testing: false,
             read_only: true,
+            branding: None,
             replicas: None,
         }),
         client: reqwest::Client::new(),
@@ -466,6 +468,7 @@ async fn fifty_archive_destinations_survive_loss_of_one_without_public_inventory
             providers: vec![],
             testing: false,
             read_only: false,
+            branding: None,
             replicas: Some(file),
         }),
         client: reqwest::Client::new(),

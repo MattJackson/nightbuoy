@@ -1,0 +1,7 @@
+# Optional post-install overlay. The default image contains no customer bundles.
+services:
+  app:
+    environment:
+      NIGHTBUOY_BRANDING_DIR: /branding-package
+    volumes:
+      - ${NIGHTBUOY_BRANDING_PACKAGE:?Set the absolute path to a separate branding package}:/branding-package:ro

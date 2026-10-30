@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- NightBuoy-only OEM installation with five local appearance palettes and separate post-install branding bundles.
+- Installer guidance for retrieving the one-use setup token and fresh dev reinstalls that retain old volumes and certificate trust.
+
 - Encrypted forum prototype with portable member identities, boards, topics, replies, attachments, local search and moderation.
 - Configurable enrollment/history policies, forge enrollment and peer administrator revocation.
 - Ordered confirmation through CometBFT and portable native/browser verification.

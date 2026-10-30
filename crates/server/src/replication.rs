@@ -523,6 +523,7 @@ mod tests {
             providers: vec![],
             testing: false,
             read_only: false,
+            branding: None,
             replicas: None,
         };
         let app = App {

@@ -22,6 +22,7 @@ pub struct Config {
     pub providers: Vec<Provider>,
     pub testing: bool,
     pub read_only: bool,
+    pub branding: Option<crate::branding::Branding>,
     pub replicas: Option<PathBuf>,
 }
 impl Config {
@@ -109,6 +110,10 @@ impl Config {
             providers,
             testing,
             read_only: env::var("NIGHTBUOY_READ_ONLY").as_deref() == Ok("1"),
+            branding: env::var("NIGHTBUOY_BRANDING_DIR")
+                .ok()
+                .map(|d| crate::branding::Branding::load(std::path::Path::new(&d)))
+                .transpose()?,
             replicas: env::var("NIGHTBUOY_REPLICAS_FILE").ok().map(Into::into),
         })
     }

@@ -10,7 +10,7 @@ Independent ownership matters as much as copying. The target is dozens of indepe
 
 “No loss” is a durability statement with prerequisites. The latest confirmed records, attachments, membership/key envelopes and verification material must have reached a surviving copy. A hash cannot reconstruct missing bytes. A user's unsent draft cannot be recovered from someone else's archive. The application must distinguish a local draft, a pending submission, a consensus-confirmed post and a confirmed independent archive copy.
 
-freemkv is the first customer configuration, not a protocol special case. Its forum uses freemkv's local logo assets, navigation, typography, teal palette and light/dark styling. Other communities choose their own branding, domains and compatible frontends.
+The OEM installation is NightBuoy only. Its five built-in palettes are Light, Dark, Midnight, Paper and High Contrast. Optional organization branding is a separate public-assets bundle applied after installation; no customer brand names, assets or choices are shipped in the core image.
 
 ## 2. Security, privacy and user experience
 
@@ -188,7 +188,7 @@ Fresh deployment presents Create community or Join/restore. A local one-use boot
 
 For Tor deployments, every applicable outbound client must honor the chosen proxy/routing policy or fail closed. A proxy on one HTTP client does not cover another SDK's independent client. No DNS, redirect, asset or storage transfer should silently bypass the configured privacy path.
 
-Standalone domains, subdomains, path mounts, embedding, headless use and replaceable frontends are product goals. The current reference implementation serves one origin at `/`; path mounts, cross-origin/embedded integration and installable script-free skin packages are not implemented. The two built-in skins are not a complete skin-package API.
+Standalone domains, subdomains, path mounts, embedding, headless use and replaceable frontends are product goals. The current reference implementation serves one origin at `/`; path mounts, cross-origin/embedded integration are not implemented. Post-install branding uses a validated metadata manifest, local CSS and logo assets; it changes presentation per deployment without changing the signed forum history. The legacy policy presentation identifier is retained for archive compatibility and does not select branding.
 
 ## 12. Implementation and release gates
 

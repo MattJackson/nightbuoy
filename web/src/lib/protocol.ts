@@ -1,6 +1,6 @@
 import initProof,{verify_consensus} from '../generated-proof/nightbuoy_proof.js';
 import {hash,verify,bytes,un64,canonical,type Signed,type Device} from './crypto.ts';
-export type Policy={name:string;admission:'automatic'|'approval';history:boolean;identity:'forge'|'key';skin:'freemkv'|'nightbuoy';consensus?:any};
+export type Policy={name:string;admission:'automatic'|'approval';history:boolean;identity:'forge'|'key';skin:string;consensus?:any};
 export type Member={device:Device;role:string;status:string;floor:number};
 export type View={policy:Policy;epoch:number;members:Record<string,Member>;grants:Record<string,Record<string,string>>;publishers:string[]};
 export type Published={event:Signed;publisher:string;receipt:string};
@@ -9,7 +9,7 @@ export type Verified={community:string;tip:string;authority:string;view:View;vie
 export type Event={hash:string;author:string;control:string;epoch:number;kind:string;id:string;parent:string;previous:string;created:number;signed:Signed};
 function fail(s:string):never{throw Error(s);}
 function array(s:Signed,n:number):any[]{const v=JSON.parse(s.body);if(!Array.isArray(v)||v.length!==n||canonical(v)!==s.body)fail('Invalid protocol encoding.');return v;}
-function checkPolicy(p:Policy){if(!['automatic','approval'].includes(p.admission)||!['forge','key'].includes(p.identity)||!['freemkv','nightbuoy'].includes(p.skin)||!p.name||p.name.length>80)fail('Invalid community policy.');}
+function checkPolicy(p:Policy){if(!['automatic','approval'].includes(p.admission)||!['forge','key'].includes(p.identity)||(typeof p.skin!=='string'||!/^[-a-z0-9]{1,40}$/.test(p.skin))||!p.name||p.name.length>80)fail('Invalid community policy.');}
 async function device(d:Device){if(await hash(un64(d.sign))!==d.id||d.wrap.kty!=='RSA'||d.wrap.e!=='AQAB'||d.wrap.n?.length!==512||d.wrap.d)fail('Invalid member public keys.');}
 function grants(v:View,list:any[]){if(!Array.isArray(list)||list.length>4000)fail('Invalid key grants.');for(const g of list){const m=v.members[g.member];if(!m||m.status!=='active'||g.epoch<m.floor||g.epoch>v.epoch||un64(g.key).length!==384)fail('Invalid key recipient.');v.grants[g.epoch]??={};if(v.grants[g.epoch][g.member]&&v.grants[g.epoch][g.member]!==g.key)fail('Key grant changed.');v.grants[g.epoch][g.member]=g.key;}}
 function allKeys(v:View){for(const m of Object.values(v.members))if(m.status==='active'&&!v.grants[v.epoch]?.[m.device.id])fail('Incomplete key rotation.');}

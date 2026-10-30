@@ -211,7 +211,9 @@ async fn security(State(app): State<App>, req: Request, next: Next) -> Response 
             "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data:; connect-src 'self'; font-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'",
         ),
     ] {
-        h.insert(k, HeaderValue::from_static(v));
+        if k != "content-security-policy" || !h.contains_key(k) {
+            h.insert(k, HeaderValue::from_static(v));
+        }
     }
     if app.config.public_url.starts_with("https:") {
         h.insert(
@@ -228,6 +230,8 @@ pub fn router(app: App) -> Router {
     Router::new()
         .route("/healthz", get(|| async { Json(json!({"ok":true})) }))
         .route("/api/status", get(status))
+        .route("/api/branding", get(branding))
+        .route("/branding/{file}", get(branding_asset))
         .route(
             "/api/challenge",
             post(challenge).layer(DefaultBodyLimit::max(32 * 1024)),
@@ -266,6 +270,46 @@ pub fn router(app: App) -> Router {
         .layer(DefaultBodyLimit::max(64 * 1024 * 1024))
         .layer(middleware::from_fn_with_state(app.clone(), security))
         .with_state(app)
+}
+async fn branding(State(app): State<App>) -> Json<Value> {
+    if locked(&app).data.is_some()
+        && let Some(brand) = &app.config.branding
+    {
+        return Json(brand.public());
+    }
+    Json(
+        json!({"name":"NightBuoy","home":"/","tagline":"Community-owned conversations.","logo":"/nightbuoy.svg","favicon":"/nightbuoy.svg","links":[]}),
+    )
+}
+async fn branding_asset(State(app): State<App>, Path(file): Path<String>) -> Result<Response> {
+    let brand = app
+        .config
+        .branding
+        .as_ref()
+        .ok_or_else(|| Error(StatusCode::NOT_FOUND, "asset not found".into()))?;
+    let (path, mime) = brand
+        .asset(&file)
+        .ok_or_else(|| Error(StatusCode::NOT_FOUND, "asset not found".into()))?;
+    let meta = tokio::fs::symlink_metadata(&path)
+        .await
+        .map_err(|_| bad("branding asset unavailable"))?;
+    if !meta.is_file() || meta.file_type().is_symlink() || meta.len() > 4 * 1024 * 1024 {
+        return Err(bad("invalid branding asset"));
+    }
+    let bytes = tokio::fs::read(path)
+        .await
+        .map_err(|_| bad("branding asset unavailable"))?;
+    Ok((
+        [
+            ("content-type", mime),
+            (
+                "content-security-policy",
+                "default-src 'none'; style-src 'unsafe-inline'; sandbox",
+            ),
+        ],
+        bytes,
+    )
+        .into_response())
 }
 async fn status(State(app): State<App>) -> Json<Value> {
     let s = locked(&app);

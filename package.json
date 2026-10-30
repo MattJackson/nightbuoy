@@ -18,7 +18,8 @@
     "test:compose": "node scripts/smoke-compose.mjs",
     "test:tor": "node scripts/smoke-tor.mjs",
     "operator": "node scripts/operator.mjs",
-    "test:production": "node scripts/smoke-production.mjs"
+    "test:production": "node scripts/smoke-production.mjs",
+    "dev:reinstall": "node scripts/reinstall-dev.mjs"
   },
   "dependencies": {
     "hash-wasm": "^4.12.0",
