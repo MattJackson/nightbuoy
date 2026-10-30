@@ -1,0 +1,2 @@
+export class ApiError extends Error{constructor(message:string,public status:number){super(message);}}
+export async function api<T=any>(path:string,data?:unknown,headers:Record<string,string>={}):Promise<T>{const r=await fetch(path,{method:data===undefined?'GET':'POST',headers:{...(data===undefined?{}:{'Content-Type':'application/json'}),...headers},...(data===undefined?{}:{body:JSON.stringify(data)}),credentials:'same-origin',cache:'no-store'});const result=await r.json();if(!r.ok)throw new ApiError(result.error||`Request failed (${r.status}).`,r.status);return result;}

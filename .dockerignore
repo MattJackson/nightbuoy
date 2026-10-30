@@ -1,0 +1,16 @@
+.git
+.tools
+.dev
+.env
+.test-state.json
+.test-pids.json
+node_modules
+target
+web/node_modules
+web/dist
+web/src/generated-proof
+test-results
+playwright-report
+data
+*.sqlite*
+.DS_Store

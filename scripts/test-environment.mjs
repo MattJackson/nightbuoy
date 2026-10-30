@@ -1,0 +1,34 @@
+import {mkdtemp,writeFile,readFile,mkdir,rm} from 'node:fs/promises';
+import {tmpdir} from 'node:os';
+import {join,resolve} from 'node:path';
+import {spawn,spawnSync} from 'node:child_process';
+import http from 'node:http';
+import {createHash} from 'node:crypto';
+let ready=false;await rm('.test-state.json',{force:true});
+const dir=await mkdtemp(join(tmpdir(),'nightbuoy-e2e-'));const replica=join(dir,'independent');await mkdir(replica);
+const targets=join(dir,'replicas.json');await writeFile(targets,JSON.stringify([{id:'independent-owner',kind:'directory',directory:replica,mode:'push',consent:true}]));
+const providers=join(dir,'providers.json');await writeFile(providers,JSON.stringify([{id:'fixture',label:'Local test forge',base_url:'http://127.0.0.1:4100',client_id:'test-client',client_secret:'test-secret',kind:'forgejo'}]));
+const codes=new Map();let nextAccount=123;
+const fixture=http.createServer(async(req,res)=>{const u=new URL(req.url,'http://127.0.0.1:4100');
+ if(u.pathname==='/ready'){res.writeHead(ready?200:503);res.end();return;}
+ if(u.pathname==='/login/oauth/authorize'){const code=crypto.randomUUID();codes.set(code,{challenge:u.searchParams.get('code_challenge'),subject:nextAccount++});const callback=new URL(u.searchParams.get('redirect_uri'));callback.searchParams.set('state',u.searchParams.get('state'));callback.searchParams.set('code',code);res.writeHead(302,{Location:callback.toString()});res.end();return;}
+ if(u.pathname==='/login/oauth/access_token'){let raw='';for await(const b of req)raw+=b;const f=new URLSearchParams(raw);const c=codes.get(f.get('code'));codes.delete(f.get('code'));const h=createHash('sha256').update(f.get('code_verifier')||'').digest('base64url');res.setHeader('Content-Type','application/json');if(!c||h!==c.challenge||f.get('client_secret')!=='test-secret'){res.writeHead(400);res.end('{"error":"invalid_grant"}');return;}res.end(JSON.stringify({access_token:'fixture-'+c.subject}));return;}
+ if(u.pathname==='/api/v1/user'){const id=Number(req.headers.authorization?.split('-').at(-1));res.setHeader('Content-Type','application/json');res.end(JSON.stringify({id,login:'private-forge-login-'+id,email:'never-requested@example.invalid'}));return;}
+ if(u.pathname==='/validator'&&req.method==='POST'){let raw='';for await(const b of req)raw+=b;const {id,action}=JSON.parse(raw);const node=consensusNodes[id];if(action==='stop'){node.engine.kill('SIGTERM');await new Promise(r=>node.engine.once('exit',r));if(id===0)node.app.kill('SIGTERM');}else if(action==='start'){node.engine=startEngine(node.home);children.push(node.engine);}res.end('ok');return;}
+ if(u.pathname==='/stop-first'&&req.method==='POST'){children[0].kill('SIGTERM');await new Promise(r=>children[0].once('exit',r));res.end('stopped');return;}
+ res.writeHead(404);res.end();});await new Promise(r=>fixture.listen(4100,'127.0.0.1',r));
+const children=[];const apps=[];const consensusNodes=[];process.on('uncaughtException',e=>{console.error(e);process.exitCode=1;void close();});process.on('SIGTERM',close);process.on('SIGINT',close);
+for(let i=0;i<5;i++){const data=join(dir,'instance-'+i);const port=4101+i;const child=spawn(resolve('target/debug/nightbuoy'),[],{env:{...process.env,NIGHTBUOY_DATA:data,NIGHTBUOY_PUBLIC_URL:`http://127.0.0.1:${port}`,NIGHTBUOY_LISTEN:`127.0.0.1:${port}`,NIGHTBUOY_TEST_MODE:'1',NIGHTBUOY_PROVIDERS_FILE:providers,...(i===0?{NIGHTBUOY_REPLICAS_FILE:targets}:{})},stdio:['ignore','ignore','pipe']});let log='';child.stderr.on('data',b=>{log+=b;if(!b.toString().includes('Setup token'))process.stderr.write(b);});children.push(child);for(let j=0;j<100;j++){if(child.exitCode!==null)throw Error('Application exited: '+log);try{if((await fetch(`http://127.0.0.1:${port}/api/status`)).ok)break;}catch{}await new Promise(r=>setTimeout(r,100));if(j===99)throw Error('Application did not start: '+log);}const bootstrap=(await readFile(join(data,'bootstrap-token'),'utf8')).trim();apps.push({url:`http://127.0.0.1:${port}`,data,bootstrap});}
+const comet=process.env.NIGHTBUOY_COMET||resolve('.tools/bin/cometbft');
+const network=join(dir,'consensus');const initialized=spawnSync(comet,['testnet','--v','4','--o',network],{encoding:'utf8'});if(initialized.status!==0)throw Error(initialized.stderr);
+const homes=Array.from({length:4},(_,i)=>join(network,'node'+i));
+const ids=homes.map(home=>spawnSync(comet,['show-node-id','--home',home],{encoding:'utf8'}).stdout.trim());
+function startEngine(home){const child=spawn(comet,['start','--home',home,'--log_level','error'],{stdio:['ignore','ignore','pipe']});child.stderr.on('data',b=>{process.stderr.write(b);});return child;}
+for(let i=0;i<4;i++){
+ const home=homes[i];let config=await readFile(join(home,'config/config.toml'),'utf8');
+ config=config.replace(/^proxy_app = .*$/m,`proxy_app = "tcp://127.0.0.1:${4401+i}"`).replace('laddr = "tcp://127.0.0.1:26657"',`laddr = "tcp://127.0.0.1:${4501+i}"`).replace('laddr = "tcp://0.0.0.0:26656"',`laddr = "tcp://127.0.0.1:${4601+i}"`).replace(/^persistent_peers = .*$/m,`persistent_peers = "${ids.map((id,j)=>id+'@127.0.0.1:'+(4601+j)).join(',')}"`).replace(/^allow_duplicate_ip = .*$/m,'allow_duplicate_ip = true').replace(/^timeout_commit = .*$/m,'timeout_commit = "300ms"').replace(/^timeout_broadcast_tx_commit = .*$/m,'timeout_broadcast_tx_commit = "5s"').replace(/^max_tx_bytes = .*$/m,'max_tx_bytes = 8500000');await writeFile(join(home,'config/config.toml'),config);
+ const data=join(dir,'bft-app-'+i),port=4301+i;const app=spawn(resolve('target/debug/nightbuoy'),[],{env:{...process.env,NIGHTBUOY_DATA:data,NIGHTBUOY_PUBLIC_URL:`http://127.0.0.1:${port}`,NIGHTBUOY_LISTEN:`127.0.0.1:${port}`,NIGHTBUOY_TEST_MODE:'1',NIGHTBUOY_CONSENSUS_RPC:`http://127.0.0.1:${4501+i}`,NIGHTBUOY_CONSENSUS_GENESIS:join(home,'config/genesis.json'),NIGHTBUOY_ABCI_LISTEN:`127.0.0.1:${4401+i}`},stdio:['ignore','ignore','pipe']});app.stderr.on('data',b=>{if(!b.toString().includes('Setup token'))process.stderr.write(b);});children.push(app);const engine=startEngine(home);children.push(engine);consensusNodes.push({url:`http://127.0.0.1:${port}`,data,home,app,engine});
+}
+for(const node of consensusNodes){for(let j=0;j<100;j++){try{if((await fetch(node.url+'/api/status')).ok)break;}catch{}await new Promise(r=>setTimeout(r,100));if(j===99)throw Error('Consensus application did not start');}node.bootstrap=(await readFile(join(node.data,'bootstrap-token'),'utf8')).trim();}
+await writeFile('.test-state.json',JSON.stringify({dir,replica,apps,consensus:consensusNodes.map(({url,data,bootstrap})=>({url,data,bootstrap}))}));ready=true;console.log('NightBuoy test instances ready');
+async function close(){for(const c of children)c.kill('SIGTERM');fixture.close();await rm('.test-state.json',{force:true});await new Promise(r=>setTimeout(r,1000));for(const c of children)c.kill('SIGKILL');process.exit(process.exitCode||0);}

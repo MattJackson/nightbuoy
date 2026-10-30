@@ -1,0 +1,39 @@
+[package]
+name = "nightbuoy"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+nightbuoy-proof = { path = "../proof" }
+tendermint-abci = "0.41.0"
+tendermint-proto = "0.41.0"
+tendermint = "0.41.0"
+axum = "0.8.9"
+tokio = { version = "1", features = ["full"] }
+tower-http = { version = "0.6", features = ["fs", "limit"] }
+serde = { version = "1", features = ["derive", "rc"] }
+serde_json = "1"
+rusqlite = { version = "0.41.1", features = ["bundled"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "socks"] }
+aes-gcm = "0.11.1"
+sha2 = "0.10"
+hmac = "0.12"
+base64 = "0.22"
+hex = "0.4"
+rand = "0.8"
+ed25519-dalek = "3.0.0"
+p256 = { version = "0.14.0", features = ["ecdsa"] }
+url = "2"
+anyhow = "1"
+subtle = "2"
+
+object_store = { version = "0.14.2", default-features = false, features = ["aws"] }
+futures = "0.3"
+reqwest_s3_transport = { package = "reqwest", version = "0.13.5", default-features = false, features = ["socks"] }
+
+[dev-dependencies]
+tempfile = "3"
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"

@@ -1,0 +1,41 @@
+{
+  "name": "nightbuoy",
+  "private": true,
+  "type": "module",
+  "version": "0.1.0",
+  "scripts": {
+    "dev": "vite --config web/vite.config.ts",
+    "build": "npm run build:proof && vite build --config web/vite.config.ts",
+    "check": "npm run build:proof && svelte-check --tsconfig web/tsconfig.json",
+    "test": "playwright test",
+    "test:crypto": "node --experimental-strip-types --test tests/crypto.test.ts",
+    "build:proof": "node scripts/build-proof.mjs",
+    "dev:up": "node scripts/compose.mjs up -d --build",
+    "dev:down": "node scripts/compose.mjs down",
+    "dev:status": "node scripts/compose.mjs ps",
+    "dev:token": "node scripts/compose.mjs exec -T node0 cat /data/app/bootstrap-token",
+    "dev:certificate": "node scripts/compose.mjs certificate",
+    "test:compose": "node scripts/smoke-compose.mjs"
+  },
+  "dependencies": {
+    "hash-wasm": "^4.12.0",
+    "svelte": "5.57.3"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.64.1",
+    "@sveltejs/vite-plugin-svelte": "7.3.1",
+    "@types/node": "^24.0.0",
+    "svelte-check": "^4.4.0",
+    "typescript": "~5.9.3",
+    "vite": "8.3.5"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/MattJackson/nightbuoy.git"
+  },
+  "homepage": "https://github.com/MattJackson/nightbuoy",
+  "bugs": {
+    "url": "https://github.com/MattJackson/nightbuoy/issues"
+  }
+}

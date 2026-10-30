@@ -1,0 +1,2 @@
+import {defineConfig} from '@playwright/test';
+export default defineConfig({testDir:'tests/browser',timeout:120000,workers:1,fullyParallel:false,use:{baseURL:'http://127.0.0.1:4101',trace:'retain-on-failure',screenshot:'only-on-failure'},webServer:{command:'node scripts/build-comet.mjs && cargo build --locked && npm run build && node scripts/test-environment.mjs',url:'http://127.0.0.1:4100/ready',timeout:180000,reuseExistingServer:false},reporter:'list'});

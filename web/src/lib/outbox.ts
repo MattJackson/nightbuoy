@@ -1,0 +1,7 @@
+import type {Signed} from './crypto';
+export type Pending={hash:string;owner:string;community:string;event:Signed;wrappedKey:string;created:number};
+function database():Promise<IDBDatabase>{return new Promise((resolve,reject)=>{const request=indexedDB.open('nightbuoy-outbox',1);request.onupgradeneeded=()=>{const store=request.result.createObjectStore('pending',{keyPath:'hash'});store.createIndex('owner','owner');};request.onsuccess=()=>resolve(request.result);request.onerror=()=>reject(Error('Encrypted pending storage is unavailable. Export or retry before closing this browser.'));});}
+async function transaction<T>(mode:IDBTransactionMode,operation:(store:IDBObjectStore)=>IDBRequest<T>):Promise<T>{const db=await database();return new Promise((resolve,reject)=>{const tx=db.transaction('pending',mode);const request=operation(tx.objectStore('pending'));let result:T;request.onsuccess=()=>{result=request.result;};tx.oncomplete=()=>{db.close();resolve(result);};tx.onerror=()=>{db.close();reject(Error('The encrypted pending draft could not be saved.'));};tx.onabort=tx.onerror;});}
+export async function savePending(p:Pending){await transaction('readwrite',s=>s.put(p));}
+export async function removePending(hash:string){await transaction('readwrite',s=>s.delete(hash));}
+export async function listPending(owner:string,community:string):Promise<Pending[]>{return (await transaction<Pending[]>('readonly',s=>s.index('owner').getAll(owner))).filter(p=>p.community===community).sort((a,b)=>a.created-b.created);}

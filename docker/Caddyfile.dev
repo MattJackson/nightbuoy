@@ -1,0 +1,21 @@
+{
+ admin off
+ auto_https disable_redirects
+ skip_install_trust
+}
+https://localhost:{$HTTPS_PORT:8443} {
+ tls internal
+ reverse_proxy node0:3000
+}
+https://node1.localhost:{$HTTPS_PORT:8443} {
+ tls internal
+ reverse_proxy node1:3000
+}
+https://node2.localhost:{$HTTPS_PORT:8443} {
+ tls internal
+ reverse_proxy node2:3000
+}
+https://node3.localhost:{$HTTPS_PORT:8443} {
+ tls internal
+ reverse_proxy node3:3000
+}

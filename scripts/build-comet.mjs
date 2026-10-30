@@ -1,0 +1,3 @@
+import {spawnSync} from 'node:child_process';import {mkdirSync,existsSync} from 'node:fs';import {resolve} from 'node:path';
+const existing=process.env.NIGHTBUOY_COMET||resolve('.tools/bin/cometbft');if(existsSync(existing)){const r=spawnSync(existing,['version'],{encoding:'utf8'});if(r.status===0&&r.stdout.trim()==='0.38.26')process.exit(0);throw Error('Expected CometBFT 0.38.26');}
+mkdirSync(resolve('.tools/bin'),{recursive:true});const r=spawnSync('go',['install','github.com/cometbft/cometbft/cmd/cometbft@v0.38.26'],{env:{...process.env,GOBIN:resolve('.tools/bin')},stdio:'inherit'});if(r.status!==0)process.exit(r.status||1);
