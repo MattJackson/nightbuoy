@@ -206,7 +206,7 @@ Standalone domains, subdomains, path mounts, embedding, headless use and replace
 | Archive adapters | 50 local archive destinations tested with one deleted and surviving copies verified; external provider-specific live tests and distributed-owner scale tests remain operator acceptance work |
 | Deliberate branch recovery | Fresh-network consensus recovery, forged-checkpoint rejection, new posting and explicit client branch choice tested; automated comparison/notifications remain future work |
 | Durable pending outbox | Encrypted IndexedDB outbox tested across quorum loss, page reload and successful retry |
-| HTTPS/Tor/Docker packaging | HTTPS development image tested; production/Tor profiles and independent-key operator tooling supplied. Real Tor service plus separate client verified key sign-in and decryption using automated Firefox; not an anonymity certification |
+| HTTPS/Tor/Docker packaging | HTTPS development and production profiles tested, including separately provisioned non-voting frontend publication without adding a validator vote; independent-key operator tooling supplied. Real Tor service plus separate client verified key sign-in and decryption using automated Firefox; not an anonymity certification |
 | Security review | Initial independent agent audit completed; remediation evidence in docs/AUDIT.md; follow-up review blocked by review system, no professional certification |
 | License | MIT, selected by the project owner; standard repository/community documents follow the existing MIT repositories |
 

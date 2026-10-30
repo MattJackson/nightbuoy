@@ -1,12 +1,12 @@
 import {docker,compose,root} from './compose.mjs';
 import {firefox,expect} from '@playwright/test';
-import {mkdir,copyFile,writeFile,access,chmod} from 'node:fs/promises';
+import {mkdir,readFile,writeFile,chmod} from 'node:fs/promises';
 import {resolve} from 'node:path';
 const dir=resolve(root,'.dev/tor-operator');
-await access(resolve(root,'.dev/tor-smoke-archive.json'));
+const fixture=JSON.parse(await readFile(resolve(root,'.dev/tor-smoke-fixture.json'),'utf8'));
 await mkdir(resolve(dir,'public'),{recursive:true,mode:0o700});await mkdir(resolve(dir,'secrets'),{recursive:true,mode:0o700});
 await chmod(resolve(dir,'public'),0o755);
-await copyFile(resolve(root,'.dev/tor-smoke-archive.json'),resolve(dir,'public/archive.json'));await writeFile(resolve(dir,'public/replicas.json'),'[]');
+await writeFile(resolve(dir,'public/archive.json'),JSON.stringify(fixture.archive));await writeFile(resolve(dir,'recovery.json'),JSON.stringify(fixture.recovery),{mode:0o600});await writeFile(resolve(dir,'public/replicas.json'),'[]');
 // This temporary file is needed for Compose validation before an onion identity exists.
 await writeFile(resolve(dir,'application.env'),'NIGHTBUOY_READ_ONLY=1\nNIGHTBUOY_PUBLIC_URL=https://unconfigured.invalid\n');
 const env={NIGHTBUOY_OPERATOR_DIR:dir,NIGHTBUOY_HOST:'unused.invalid',NIGHTBUOY_P2P_PORT:'29656'};
@@ -25,6 +25,6 @@ try{
  if(!await page.evaluate(()=>isSecureContext&&!!crypto.subtle))throw Error('Onion origin lacks the required secure cryptographic context.');
  await expect(page.getByText('A confirmed post on the deliberate recovery branch.',{exact:true})).toHaveCount(0);
  page.once('dialog',d=>d.accept());await page.getByRole('button',{name:'Choose this branch',exact:true}).click();
- await page.locator('input[type=file]').first().setInputFiles(resolve(root,'.dev/tor-smoke-recovery.json'));await page.getByLabel('Passphrase',{exact:true}).fill('six independently chosen words are not this test');await page.getByRole('button',{name:'Sign in & unlock'}).click();await expect(page.getByRole('heading',{name:'Shared consensus board'})).toBeVisible({timeout:60000});await page.getByRole('heading',{name:'Shared consensus board'}).click();await page.getByRole('heading',{name:'Parallel post B'}).click();await expect(page.getByText('A confirmed post on the deliberate recovery branch.',{exact:true})).toBeVisible();
+ await page.locator('input[type=file]').first().setInputFiles(resolve(dir,'recovery.json'));await page.getByLabel('Passphrase',{exact:true}).fill('six independently chosen words are not this test');await page.getByRole('button',{name:'Sign in & unlock'}).click();await expect(page.getByRole('heading',{name:'Shared consensus board'})).toBeVisible({timeout:60000});await page.getByRole('heading',{name:'Shared consensus board'}).click();await page.getByRole('heading',{name:'Parallel post B'}).click();await expect(page.getByText('A confirmed post on the deliberate recovery branch.',{exact:true})).toBeVisible();
  await page.screenshot({path:resolve(root,'.dev/tor-smoke.png'),fullPage:true});console.log('Tor smoke passed: separate Tor client, v3 onion frontend, secure WebCrypto context, explicit branch choice, key sign-in and authenticated history decryption. This uses automated Firefox with the onion secure-context preference, not a Tor Browser anonymity certification.');
 }finally{await browser?.close();try{docker(['rm','-f',client],{capture:true});}catch{}compose([...base,'--profile','*','down','--volumes','--remove-orphans'],options);}
