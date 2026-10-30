@@ -1,6 +1,6 @@
 # NightBuoy: master architecture and product vision
 
-Updated: 2026-10-30. This is the single architecture source of truth. Normative requirements describe the intended product; the implementation matrix identifies what exists and what remains. The implementation is a security prototype under independent agent review, not a production release or professionally audited security system. Completion remains a usable deployment at **forums.freemkv.org**, with real enrollment, authenticated reading, posting and independently recoverable encrypted history.
+Updated: 2026-10-30. This is the single architecture source of truth. Normative requirements describe the intended product; the implementation matrix identifies what exists and what remains. The implementation is a security prototype under independent agent review, not a production release or professionally audited security system. Completion requires a usable deployment with real enrollment, authenticated reading, posting and independently recoverable encrypted history.
 
 ## 1. The community survives its website
 

@@ -5,7 +5,7 @@
 
 # NightBuoy
 
-An encrypted community forum with portable member identities, independently hosted frontends and replicated storage. The community should survive its original website. The first intended deployment is **forums.freemkv.org**.
+An encrypted community forum with portable member identities, independently hosted frontends and replicated storage. The community should survive its original website.
 
 **Status: executable security prototype under review. Not yet ready to deploy for real users.**
 
@@ -30,7 +30,7 @@ Alternate frontends are https://node1.localhost:8443, https://node2.localhost:84
 
 `npm run dev:status` shows containers. `npm run dev:down` stops them while retaining volumes, identities and data. Never delete validator volumes to repair a running network. `npm run test:compose` exercises a separate disposable HTTPS network on port 9443 after building the image; it creates synthetic test keys under ignored `.dev/`. Initial image builds compile pinned Rust, Go and WebAssembly dependencies and can take several minutes.
 
-This is a deployable **development environment**, not a production deployment profile for forums.freemkv.org. Production recovery, Tor acceptance, independent re-review and the other release gates in the master document remain open.
+This is a deployable **development environment**, not a production deployment profile. Production recovery, Tor acceptance, independent re-review and the other release gates in the master document remain open.
 
 ## Development
 
