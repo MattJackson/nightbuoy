@@ -12,6 +12,7 @@ use tendermint_proto::v0_38::abci::*;
 #[serde(tag = "type", content = "data", rename_all = "snake_case")]
 pub enum Transaction {
     Genesis(Signed),
+    Recovery(Box<Archive>),
     Control(Signed),
     Event(Record),
 }
@@ -26,6 +27,7 @@ struct Stage {
 pub struct Consensus {
     pub rpc: String,
     pub trust: nightbuoy_proof::Trust,
+    max_transaction_bytes: usize,
     store: Arc<Mutex<Store>>,
     stage: Arc<Mutex<Stage>>,
 }
@@ -40,6 +42,13 @@ impl Consensus {
             .ok_or_else(|| anyhow::anyhow!("invalid consensus genesis"))?
             .entry("app_state")
             .or_insert(serde_json::Value::Null);
+        let block_limit = raw["consensus_params"]["block"]["max_bytes"]
+            .as_str()
+            .and_then(|n| n.parse::<usize>().ok())
+            .unwrap_or(22_020_096);
+        let max_transaction_bytes = block_limit
+            .saturating_sub(64 * 1024)
+            .min(crate::model::MAX_ARCHIVE_BYTES + 1024);
         let genesis: tendermint::Genesis = serde_json::from_value(raw)?;
         let trust = nightbuoy_proof::Trust {
             chain_id: genesis.chain_id.to_string(),
@@ -89,12 +98,16 @@ impl Consensus {
         Ok(Self {
             rpc,
             trust,
+            max_transaction_bytes,
             store,
             stage: Arc::new(Mutex::new(stage)),
         })
     }
     fn apply(&self, state: &mut Option<Data>, tx: &[u8]) -> anyhow::Result<()> {
-        anyhow::ensure!(tx.len() <= 8_500_000, "transaction too large");
+        anyhow::ensure!(
+            tx.len() <= self.max_transaction_bytes,
+            "transaction too large"
+        );
         let tx: Transaction = serde_json::from_slice(tx)?;
         match tx {
             Transaction::Genesis(g) => {
@@ -105,6 +118,10 @@ impl Consensus {
                     "community must bind the configured validator set"
                 );
                 *state = Some(d);
+            }
+            Transaction::Recovery(archive) => {
+                anyhow::ensure!(state.is_none(), "community already initialized");
+                *state = Some(Data::recovery_seed(&archive, &self.trust)?);
             }
             Transaction::Control(s) => {
                 let a: serde_json::Value = serde_json::from_str(&s.body)?;
@@ -132,6 +149,10 @@ impl Consensus {
         tx: &Transaction,
     ) -> anyhow::Result<serde_json::Value> {
         let bytes = serde_json::to_vec(tx)?;
+        anyhow::ensure!(
+            bytes.len() <= self.max_transaction_bytes,
+            "transaction exceeds this network's configured block capacity; use a fresh network with the documented recovery limits"
+        );
         let response=client.post(&self.rpc).json(&serde_json::json!({"jsonrpc":"2.0","id":"nightbuoy","method":"broadcast_tx_commit","params":{"tx":b64(bytes)}})).send().await.map_err(|_|anyhow::anyhow!("validators unavailable; post is unconfirmed"))?;
         let value: serde_json::Value = response
             .json()

@@ -161,6 +161,40 @@ async fn security(State(app): State<App>, req: Request, next: Next) -> Response 
         )
         .into_response();
     }
+    if app.config.read_only
+        && (req.uri().path().starts_with("/auth/")
+            || (mutation
+                && !matches!(
+                    req.uri().path(),
+                    "/api/challenge" | "/api/login" | "/api/logout" | "/api/restore"
+                )))
+    {
+        return Error(
+            StatusCode::FORBIDDEN,
+            "This deployment is read-only; use a publishing frontend for changes.".into(),
+        )
+        .into_response();
+    }
+    // Authenticate before a JSON extractor allocates an archive-sized request body.
+    if mutation {
+        let authorized = {
+            let s = locked(&app);
+            match req.uri().path() {
+                "/api/events" => member(&s, req.headers(), true).map(|_| ()),
+                "/api/control" | "/api/import" | "/api/replicate" => {
+                    admin(&s, req.headers()).map(|_| ())
+                }
+                "/api/setup" => bootstrap(&s, req.headers())
+                    .and_then(|_| member(&s, req.headers(), false).map(|_| ())),
+                "/api/restore" => bootstrap(&s, req.headers()),
+                "/api/join" => member(&s, req.headers(), false).map(|_| ()),
+                _ => Ok(()),
+            }
+        };
+        if let Err(error) = authorized {
+            return error.into_response();
+        }
+    }
     let mut response = next.run(req).await;
     let h = response.headers_mut();
     for (k, v) in [
@@ -194,16 +228,34 @@ pub fn router(app: App) -> Router {
     Router::new()
         .route("/healthz", get(|| async { Json(json!({"ok":true})) }))
         .route("/api/status", get(status))
-        .route("/api/challenge", post(challenge))
-        .route("/api/login", post(login))
+        .route(
+            "/api/challenge",
+            post(challenge).layer(DefaultBodyLimit::max(32 * 1024)),
+        )
+        .route(
+            "/api/login",
+            post(login).layer(DefaultBodyLimit::max(32 * 1024)),
+        )
         .route("/api/logout", post(logout))
-        .route("/api/join", post(join))
+        .route(
+            "/api/join",
+            post(join).layer(DefaultBodyLimit::max(32 * 1024)),
+        )
         .route("/api/me", get(me))
-        .route("/api/setup", post(setup))
+        .route(
+            "/api/setup",
+            post(setup).layer(DefaultBodyLimit::max(8_500_000)),
+        )
         .route("/api/restore", post(restore))
         .route("/api/sync", get(sync))
-        .route("/api/control", post(control))
-        .route("/api/events", post(event))
+        .route(
+            "/api/control",
+            post(control).layer(DefaultBodyLimit::max(8_500_000)),
+        )
+        .route(
+            "/api/events",
+            post(event).layer(DefaultBodyLimit::max(8_500_000)),
+        )
         .route("/api/requests", get(requests))
         .route("/api/replication", get(replication))
         .route("/api/replicate", post(replicate))
@@ -218,7 +270,7 @@ pub fn router(app: App) -> Router {
 async fn status(State(app): State<App>) -> Json<Value> {
     let s = locked(&app);
     Json(
-        json!({"configured":s.data.is_some(),"consensus":app.consensus.as_ref().map(|c|&c.trust),"genesis":s.data.as_ref().map(|d|&d.archive.genesis),"community":s.data.as_ref().map(Data::community),"branch":s.data.as_ref().map(Data::branch),"publisher":s.publication_key(),"origin":app.config.public_url,"providers":app.config.providers.iter().map(|p|json!({"id":p.id,"label":p.label})).collect::<Vec<_>>(),"test_mode":app.config.testing}),
+        json!({"configured":s.data.is_some(),"consensus":app.consensus.as_ref().map(|c|&c.trust),"genesis":s.data.as_ref().map(|d|&d.archive.genesis),"community":s.data.as_ref().map(Data::community),"branch":s.data.as_ref().map(Data::branch),"publisher":s.publication_key(),"origin":app.config.public_url,"providers":app.config.providers.iter().map(|p|json!({"id":p.id,"label":p.label})).collect::<Vec<_>>(),"test_mode":app.config.testing,"read_only":app.config.read_only}),
     )
 }
 #[derive(Deserialize)]
@@ -388,27 +440,37 @@ async fn restore(
     h: HeaderMap,
     Json(archive): Json<Archive>,
 ) -> Result<Json<Value>> {
-    if app.consensus.is_some() {
-        return Err(bad(
-            "Restore a consensus network offline using a verified checkpoint; do not overwrite live consensus state.",
-        ));
+    {
+        let s = locked(&app);
+        bootstrap(&s, &h)?;
     }
-    let mut s = locked(&app);
-    bootstrap(&s, &h)?;
     let expected = h
         .get("x-community-fingerprint")
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
-    let d = Data::replay(&archive)?;
+    let d = if let Some(engine) = &app.consensus {
+        Data::recovery_seed(&archive, &engine.trust)?
+    } else {
+        Data::replay(&archive)?
+    };
     if d.community() != expected {
         return Err(bad("trusted community fingerprint required"));
     }
     let id = d.community();
-    s.save(d)?;
-    s.bootstrap.clear();
+    if app.consensus.is_some() {
+        confirmed(
+            &app,
+            &crate::consensus::Transaction::Recovery(Box::new(archive)),
+        )
+        .await?;
+    } else {
+        locked(&app).save(d)?;
+    }
+    locked(&app).bootstrap.clear();
     let _ = std::fs::remove_file(app.config.data.join("bootstrap-token"));
     Ok(Json(json!({"community":id})))
 }
+
 async fn sync(State(app): State<App>, h: HeaderMap) -> Result<Json<Archive>> {
     {
         let s = locked(&app);

@@ -1,0 +1,12 @@
+{
+ admin off
+ auto_https disable_redirects
+}
+https://{$NIGHTBUOY_HOST} {
+ tls {
+  issuer acme {
+   disable_http_challenge
+  }
+ }
+ reverse_proxy app:3000
+}

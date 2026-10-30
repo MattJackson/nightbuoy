@@ -16,3 +16,5 @@
 /.test-pids.json
 .env.*
 !.env.example
+
+/operator/

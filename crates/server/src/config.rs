@@ -21,6 +21,7 @@ pub struct Config {
     pub web: PathBuf,
     pub providers: Vec<Provider>,
     pub testing: bool,
+    pub read_only: bool,
     pub replicas: Option<PathBuf>,
 }
 impl Config {
@@ -50,6 +51,12 @@ impl Config {
             !testing || matches!(u.host_str(), Some("localhost" | "127.0.0.1")),
             "test mode is restricted to localhost"
         );
+        if onion(u.host_str().unwrap_or("")) {
+            anyhow::ensure!(
+                env::var("NIGHTBUOY_SOCKS_PROXY").is_ok_and(|p| p.starts_with("socks5h://")),
+                "onion deployments require an explicit socks5h proxy for outbound application traffic"
+            );
+        }
         let mut providers: Vec<Provider> = if let Ok(file) = env::var("NIGHTBUOY_PROVIDERS_FILE") {
             serde_json::from_slice(&std::fs::read(file)?)?
         } else {
@@ -101,6 +108,7 @@ impl Config {
                 .into(),
             providers,
             testing,
+            read_only: env::var("NIGHTBUOY_READ_ONLY").as_deref() == Ok("1"),
             replicas: env::var("NIGHTBUOY_REPLICAS_FILE").ok().map(Into::into),
         })
     }

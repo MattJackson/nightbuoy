@@ -250,6 +250,47 @@ impl Data {
             events: vec![],
         })
     }
+    /// Only an explicit member-signed branch reset can seed a different live network.
+    /// The reset embeds and verifies the old checkpoint certificate during replay.
+    pub fn recovery_seed(a: &Archive, trust: &nightbuoy_proof::Trust) -> anyhow::Result<Self> {
+        anyhow::ensure!(
+            a.proof.is_none(),
+            "recovery seed must await the new network's confirmation"
+        );
+        let last = a
+            .order
+            .last()
+            .ok_or_else(|| anyhow::anyhow!("recovery requires a branch reset"))?;
+        let control = a
+            .controls
+            .iter()
+            .find(|c| c.hash() == *last)
+            .ok_or_else(|| anyhow::anyhow!("recovery must end with a branch reset"))?;
+        let body = array(&control.body, 8)?;
+        anyhow::ensure!(
+            body[6] == "reconstitute",
+            "recovery requires a branch reset"
+        );
+        let mut checkpoint = a.clone();
+        checkpoint.order.pop();
+        checkpoint.controls.retain(|c| c.hash() != *last);
+        checkpoint.proof = Some(serde_json::from_value(body[7]["checkpoint_proof"].clone())?);
+        let old = Self::replay(&checkpoint)?;
+        let old_trust =
+            old.view().policy.consensus.as_ref().ok_or_else(|| {
+                anyhow::anyhow!("recovery requires a consensus-confirmed checkpoint")
+            })?;
+        anyhow::ensure!(
+            old_trust != trust && old_trust.chain_id != trust.chain_id,
+            "recovery requires a distinct new consensus chain"
+        );
+        let data = Self::replay_unconfirmed(a)?;
+        anyhow::ensure!(
+            data.view().policy.consensus.as_ref() == Some(trust),
+            "recovery must explicitly bind this new validator network"
+        );
+        Ok(data)
+    }
     pub fn replay(a: &Archive) -> anyhow::Result<Self> {
         let d = Self::replay_unconfirmed(a)?;
         d.verify_proof()?;

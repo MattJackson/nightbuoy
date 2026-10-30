@@ -1,0 +1,70 @@
+name: nightbuoy
+services:
+  app:
+    image: ${NIGHTBUOY_IMAGE:-nightbuoy:dev}
+    restart: unless-stopped
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    env_file: ${NIGHTBUOY_OPERATOR_DIR:-./operator}/application.env
+    environment:
+      NIGHTBUOY_DATA: /data/app
+      NIGHTBUOY_WEB: /app/web
+      NIGHTBUOY_LISTEN: 0.0.0.0:3000
+    volumes:
+      - application:/data/app
+      - ${NIGHTBUOY_OPERATOR_DIR:-./operator}/public:/config:ro
+      - ${NIGHTBUOY_OPERATOR_DIR:-./operator}/secrets:/run/secrets:ro
+    # For remote validators use an authenticated private tunnel/VPN on this bind.
+    # No application HTTP, consensus RPC, or ABCI port is published.
+    ports: ['${NIGHTBUOY_P2P_BIND:-127.0.0.1}:${NIGHTBUOY_P2P_PORT:-26656}:26656']
+    healthcheck:
+      test: [CMD, curl, --fail, --silent, http://127.0.0.1:3000/healthz]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+  consensus:
+    profiles: [validator]
+    image: ${NIGHTBUOY_IMAGE:-nightbuoy:dev}
+    restart: unless-stopped
+    command: [cometbft, start, --home, /data/comet, --log_level, error, --rpc.laddr, 'tcp://127.0.0.1:26657']
+    network_mode: service:app
+    depends_on: [app]
+    volumes:
+      - ${NIGHTBUOY_OPERATOR_DIR:-./operator}/validator:/data/comet
+  https:
+    profiles: [https]
+    image: caddy:2.10.2
+    restart: unless-stopped
+    environment:
+      NIGHTBUOY_HOST: ${NIGHTBUOY_HOST:?Set NIGHTBUOY_HOST to the HTTPS hostname}
+    ports: ['443:443/tcp', '443:443/udp']
+    volumes:
+      - ./docker/Caddyfile.production:/etc/caddy/Caddyfile:ro
+      - certificates:/data
+    depends_on: [app]
+  tor-init:
+    profiles: [setup]
+    image: nightbuoy-tor:dev
+    network_mode: none
+    command: [nightbuoy-tor-init]
+    volumes: [onion:/var/lib/tor]
+  tor:
+    profiles: [tor]
+    image: nightbuoy-tor:dev
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.tor
+    restart: unless-stopped
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    network_mode: service:app
+    depends_on: [app]
+    volumes: [onion:/var/lib/tor]
+volumes:
+  application:
+  certificates:
+  onion:

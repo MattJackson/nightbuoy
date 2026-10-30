@@ -1,0 +1,6 @@
+# Separate disposable client for acceptance tests; publish SOCKS on host loopback only.
+DataDirectory /var/lib/tor/client
+SocksPort 0.0.0.0:9050
+SocksPolicy accept *
+SafeLogging 1
+Log notice stdout

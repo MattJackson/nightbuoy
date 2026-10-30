@@ -7,7 +7,6 @@ async fn main() -> anyhow::Result<()> {
         println!("configuration valid");
         return Ok(());
     }
-    let mut store = Store::open(&config.data)?;
     let args: Vec<String> = std::env::args().collect();
     if args.get(1).is_some_and(|s| s == "verify-archive") {
         let path = args
@@ -21,10 +20,15 @@ async fn main() -> anyhow::Result<()> {
         );
         return Ok(());
     }
+    let mut store = Store::open(&config.data)?;
     if args.get(1).is_some_and(|s| s == "reset") {
         anyhow::ensure!(
             args.len() == 5 && args[4] == "--acknowledge-history-reset",
             "usage: nightbuoy reset ARCHIVE TRUSTED_COMMUNITY_FINGERPRINT --acknowledge-history-reset (service must be stopped)"
+        );
+        anyhow::ensure!(
+            config.testing || config.read_only,
+            "direct reset is restricted to loopback tests; production recovery must be confirmed by a fresh consensus network"
         );
         let archive: nightbuoy::model::Archive = serde_json::from_slice(&std::fs::read(&args[2])?)?;
         let data = nightbuoy::model::Data::replay(&archive)?;
@@ -46,10 +50,29 @@ async fn main() -> anyhow::Result<()> {
         return Ok(());
     }
 
+    if config.read_only {
+        anyhow::ensure!(
+            std::env::var("NIGHTBUOY_CONSENSUS_RPC").is_err(),
+            "a read-only service must not run a consensus application"
+        );
+        if let Ok(path) = std::env::var("NIGHTBUOY_ARCHIVE_FILE") {
+            let bytes = std::fs::read(path)?;
+            anyhow::ensure!(
+                bytes.len() <= nightbuoy::model::MAX_ARCHIVE_BYTES,
+                "archive capacity exceeded"
+            );
+            let archive: nightbuoy::model::Archive = serde_json::from_slice(&bytes)?;
+            let data = if let Some(old) = &store.data {
+                old.catch_up(&archive)?
+            } else {
+                nightbuoy::model::Data::replay(&archive)?
+            };
+            store.save(data)?;
+        }
+    }
     if store.data.is_none() {
         eprintln!(
-            "NightBuoy is unconfigured. Setup token: {}",
-            store.bootstrap
+            "NightBuoy is unconfigured. Read the one-use setup token from the protected bootstrap-token file in the data directory."
         );
     }
     let mut client_builder = reqwest::Client::builder();
@@ -88,7 +111,7 @@ async fn main() -> anyhow::Result<()> {
             .parse()?;
         anyhow::ensure!(abci.ip().is_loopback(), "ABCI must bind only to loopback");
         let server =
-            tendermint_abci::ServerBuilder::new(16 * 1024 * 1024).bind(abci, engine.clone())?;
+            tendermint_abci::ServerBuilder::new(128 * 1024 * 1024).bind(abci, engine.clone())?;
         std::thread::spawn(move || {
             if server.listen().is_err() {
                 std::process::exit(1);
@@ -97,7 +120,7 @@ async fn main() -> anyhow::Result<()> {
         state.consensus = Some(Arc::new(engine));
     } else {
         anyhow::ensure!(
-            config.testing,
+            config.testing || config.read_only,
             "Production deployments require configured consensus; local-only mode is restricted to tests."
         );
     }
@@ -112,7 +135,17 @@ async fn main() -> anyhow::Result<()> {
     );
     axum::serve(listener, api::router(state))
         .with_graceful_shutdown(async {
-            let _ = tokio::signal::ctrl_c().await;
+            #[cfg(unix)]
+            {
+                let mut terminate =
+                    tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+                        .expect("install termination signal handler");
+                tokio::select! { _ = tokio::signal::ctrl_c() => {}, _ = terminate.recv() => {} }
+            }
+            #[cfg(not(unix))]
+            {
+                let _ = tokio::signal::ctrl_c().await;
+            }
         })
         .await?;
     Ok(())

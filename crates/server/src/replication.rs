@@ -10,6 +10,7 @@ use object_store::ObjectStoreExt;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::path::PathBuf;
+use tokio::io::AsyncWriteExt;
 const LIMIT: usize = 64 * 1024 * 1024;
 #[derive(Default, Serialize, Clone)]
 pub struct TargetStatus {
@@ -242,8 +243,19 @@ async fn put(app: &App, t: &Target, path: &str, bytes: &[u8], mutable: bool) -> 
         }
         tokio::fs::create_dir_all(dest.parent().unwrap()).await?;
         let tmp = dest.with_extension(format!("{}.tmp", crate::crypto::token()));
-        tokio::fs::write(&tmp, bytes).await?;
-        tokio::fs::rename(tmp, dest).await?;
+        let mut file = tokio::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&tmp)
+            .await?;
+        file.write_all(bytes).await?;
+        file.sync_all().await?;
+        drop(file);
+        tokio::fs::rename(tmp, &dest).await?;
+        tokio::fs::File::open(dest.parent().unwrap())
+            .await?
+            .sync_all()
+            .await?;
         return Ok(());
     }
     if t.kind == "s3" {
@@ -510,6 +522,7 @@ mod tests {
             web: dir.path().into(),
             providers: vec![],
             testing: false,
+            read_only: false,
             replicas: None,
         };
         let app = App {

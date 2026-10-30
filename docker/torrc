@@ -1,0 +1,9 @@
+DataDirectory /var/lib/tor/state
+SocksPort 127.0.0.1:9050
+SocksPolicy accept 127.0.0.1
+SocksPolicy reject *
+SafeLogging 1
+Log notice stdout
+HiddenServiceDir /var/lib/tor/onion
+HiddenServiceVersion 3
+HiddenServicePort 80 127.0.0.1:3000

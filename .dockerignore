@@ -14,3 +14,5 @@ playwright-report
 data
 *.sqlite*
 .DS_Store
+
+operator

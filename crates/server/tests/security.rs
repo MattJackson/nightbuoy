@@ -277,6 +277,7 @@ async fn anonymous_reads_csrf_and_bootstrap_takeover_are_rejected() {
         web: dir.path().into(),
         providers: vec![],
         testing: false,
+        read_only: false,
         replicas: None,
     };
     let state = App {
@@ -293,6 +294,22 @@ async fn anonymous_reads_csrf_and_bootstrap_takeover_are_rejected() {
             Request::builder()
                 .uri("/api/sync")
                 .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/events")
+                .header("origin", "https://example.test")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    "malformed JSON must not be parsed before authentication",
+                ))
                 .unwrap(),
         )
         .await
@@ -356,4 +373,123 @@ fn aggregate_capacity_is_checked_before_acceptance_and_reserves_proof_space() {
     assert!(accepted >= 7);
     assert!(data.core_bytes().len() <= nightbuoy::model::MAX_CORE_BYTES);
     assert!(nightbuoy::model::MAX_ARCHIVE_BYTES - data.core_bytes().len() >= 256 * 1024);
+}
+
+#[tokio::test]
+async fn private_read_only_copy_rejects_publication_and_enrollment() {
+    let dir = tempfile::tempdir().unwrap();
+    let (data, _, dev, _) = setup();
+    let mut store = Store::open(dir.path()).unwrap();
+    store.save(data).unwrap();
+    let session = store.session(&dev.id).unwrap();
+    let state = App {
+        store: Arc::new(Mutex::new(store)),
+        config: Arc::new(Config {
+            data: dir.path().into(),
+            public_url: "https://copy.test".into(),
+            listen: "127.0.0.1:0".into(),
+            web: dir.path().into(),
+            providers: vec![],
+            testing: false,
+            read_only: true,
+            replicas: None,
+        }),
+        client: reqwest::Client::new(),
+        replication: Arc::new(Mutex::new(Default::default())),
+        consensus: None,
+    };
+    let router = api::router(state);
+    for endpoint in [
+        "/api/events",
+        "/api/control",
+        "/api/join",
+        "/api/setup",
+        "/api/import",
+        "/api/replicate",
+    ] {
+        let response = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(endpoint)
+                    .header("origin", "https://copy.test")
+                    .header("cookie", format!("nb_session={session}"))
+                    .body(Body::from("{}"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN, "{endpoint}");
+    }
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/sync")
+                .header("cookie", format!("nb_session={session}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let response = router
+        .oneshot(
+            Request::builder()
+                .uri("/api/sync")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn fifty_archive_destinations_survive_loss_of_one_without_public_inventory() {
+    let dir = tempfile::tempdir().unwrap();
+    let (data, _, _, _) = setup();
+    let community = data.community();
+    let mut store = Store::open(&dir.path().join("application")).unwrap();
+    store.save(data).unwrap();
+    let targets: Vec<Value> = (0..50).map(|i| json!({"id":format!("private-destination-{i}"),"kind":"directory","directory":dir.path().join(format!("destination-{i}")),"mode":"push","consent":true})).collect();
+    let file = dir.path().join("destinations.json");
+    std::fs::write(&file, serde_json::to_vec(&targets).unwrap()).unwrap();
+    let app = App {
+        store: Arc::new(Mutex::new(store)),
+        config: Arc::new(Config {
+            data: dir.path().join("application"),
+            public_url: "https://example.test".into(),
+            listen: "127.0.0.1:0".into(),
+            web: dir.path().into(),
+            providers: vec![],
+            testing: false,
+            read_only: false,
+            replicas: Some(file),
+        }),
+        client: reqwest::Client::new(),
+        replication: Arc::new(Mutex::new(Default::default())),
+        consensus: None,
+    };
+    nightbuoy::replication::once(&app).await.unwrap();
+    let status = serde_json::to_string(&*app.replication.lock().unwrap()).unwrap();
+    assert!(!status.contains("private-destination"));
+    assert!(app.replication.lock().unwrap().copied);
+    std::fs::remove_dir_all(dir.path().join("destination-0")).unwrap();
+    for i in 1..50 {
+        let base = dir
+            .path()
+            .join(format!("destination-{i}/nightbuoy/{community}"));
+        let pointer: Value =
+            serde_json::from_slice(&std::fs::read(base.join("latest.json")).unwrap()).unwrap();
+        let bytes = std::fs::read(base.join(format!(
+            "archives/{}.json",
+            pointer["archive"].as_str().unwrap()
+        )))
+        .unwrap();
+        assert_eq!(hash(&bytes), pointer["archive"].as_str().unwrap());
+        let archive: Archive = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(Data::replay(&archive).unwrap().community(), community);
+    }
 }

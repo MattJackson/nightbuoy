@@ -1,0 +1,8 @@
+FROM debian:bookworm-slim
+RUN apt-get update && apt-get install -y --no-install-recommends tor ca-certificates curl tini && rm -rf /var/lib/apt/lists/* && groupadd --gid 10001 nightbuoy && useradd --uid 10001 --gid 10001 --no-create-home nightbuoy && mkdir -p /var/lib/tor && chown 10001:10001 /var/lib/tor
+COPY docker/torrc /etc/tor/torrc
+COPY docker/torrc.client-test /etc/tor/client-test
+COPY docker/tor-init.sh /usr/local/bin/nightbuoy-tor-init
+USER 10001:10001
+ENTRYPOINT ["/usr/bin/tini", "--"]
+CMD ["tor", "-f", "/etc/tor/torrc"]
