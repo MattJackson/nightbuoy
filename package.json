@@ -8,7 +8,7 @@
     "build": "npm run build:proof && vite build --config web/vite.config.ts",
     "check": "npm run build:proof && svelte-check --tsconfig web/tsconfig.json",
     "test": "playwright test",
-    "test:crypto": "node --experimental-strip-types --test tests/crypto.test.ts tests/private.test.ts tests/post-text.test.ts tests/member-state.test.ts",
+    "test:crypto": "node --experimental-strip-types --test tests/crypto.test.ts tests/private.test.ts tests/post-text.test.ts tests/member-state.test.ts tests/presence.test.ts",
     "build:proof": "node scripts/build-proof.mjs",
     "dev:up": "node scripts/portable-dev.mjs up",
     "dev:down": "node scripts/portable-dev.mjs down",

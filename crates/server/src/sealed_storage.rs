@@ -15,6 +15,18 @@ impl Drop for MetadataKey {
     }
 }
 impl MetadataKey {
+    /// Separate keys/locators for bounded client state outside forum history.
+    pub fn derive(&self, context: &[u8]) -> Self {
+        Self(
+            hex::decode(keyed(&self.0, context))
+                .unwrap()
+                .try_into()
+                .unwrap(),
+        )
+    }
+    pub fn locator(&self, context: &[u8]) -> String {
+        keyed(&self.0, context)
+    }
     pub fn same(&self, other: &Self) -> bool {
         use subtle::ConstantTimeEq;
         bool::from(self.0.ct_eq(&other.0))

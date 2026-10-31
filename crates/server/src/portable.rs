@@ -843,6 +843,7 @@ async fn endpoint(
   "disconnect"=>{app.admissions.lock().await.remove(&hash(&key));let ingress=s.ingress.clone();*s=Session::empty(s.csrf.clone(),s.created,s.operator_checkpoint.clone());s.ingress=ingress;json!({"ok":true})},
   "private-read"|"private-write"=>{
    if path=="private-write"{s.refresh_source(false).await?;}else{s.refresh().await?;}s.active()?;
+   if let Some(epoch)=v.get("epoch"){anyhow::ensure!(epoch.as_u64()==s.data.as_ref().map(|d|d.view().epoch),"forum epoch changed; refresh before using shared state");}
    anyhow::ensure!(v["community"].as_str()==s.data.as_ref().map(Data::community).as_deref()&&v["branch"].as_str()==s.data.as_ref().map(Data::branch).as_deref()&&v["member"].as_str()==s.device.as_ref().map(|d|d.id.as_str()),"private state belongs to another identity or forum branch");
    let remote=s.remote.as_ref().ok_or_else(||anyhow::anyhow!("connect to a backend first"))?;
    anyhow::ensure!(remote.backend.id()?==s.connection.as_ref().unwrap().primary.id()?,"private state requires its original backend");

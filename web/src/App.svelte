@@ -4,6 +4,7 @@
  import {themes,themeId,defaultBranding,type ThemeId,type Branding} from './lib/appearance';
  import PortableConnection from './PortableConnection.svelte';
  import FormattedPost from './FormattedPost.svelte';
+ import Presence from './Presence.svelte';
  import {formatSelection,type Format} from './lib/post-text';
  import {metadataKey,prepareMetadata,accessKey,unwrapEpoch,wrapEpochForMembers,openOpaqueArchive} from './lib/metadata';
  import {api,ApiError,initializeSession,portable as sessionPortable} from './lib/api';
@@ -18,7 +19,7 @@
  let status:any=$state(null),identity:c.Identity|null=$state(null),vault:c.Vault|null=$state(null),verified:Verified|null=$state(null);
  let pending:Pending[]=$state([]),draftId:string=$state(crypto.randomUUID()),draftAttachments:NonNullable<Content['attachments']>=$state([]);
  let badEvents:{event:Event;reason:string}[]=$state([]);
- let contents:Record<string,Content>=$state({}),keys:Record<number,Uint8Array<ArrayBuffer>>={},requests:any[]=$state([]),replica:any=$state({});
+ let contents:Record<string,Content>=$state({}),keys:Record<number,Uint8Array<ArrayBuffer>>=$state.raw({}),requests:any[]=$state([]),replica:any=$state({});
  let busy=$state(false),error=$state(''),notice=$state(''),password=$state(''),confirmPassword=$state(''),bootstrap=$state(''),expected=$state(''),restoreFile:File|undefined=$state(),restoreArchive:Archive|null=$state(null);
  let theme:ThemeId=$state(themeId(localStorage.getItem('nightbuoy-theme'))),branding:Branding=$state(defaultBranding);
  let policy:Policy=$state({name:'NightBuoy community',skin:'nightbuoy',admission:'approval',history:true,identity:'key',content_version:1}),settings:Policy=$state({name:'NightBuoy community',skin:'nightbuoy',admission:'approval',history:true,identity:'key',content_version:1});
@@ -206,6 +207,7 @@
  {#if error}<div class="alert error" role="alert">{error}</div>{/if}
  {#if notice}<div class="alert" role="status">{notice}</div>{/if}
  {#if busy}<div class="progress" role="status">Working securely…</div>{/if}
+ {#if portable&&identity&&verified&&verified.view.members[identity.device.id]?.status==='active'}{#key identity.device.id+verified.community+verified.branch}<Presence {identity} {verified} epochKey={keys[verified.view.epoch]} canShare={!!status?.writable&&!status?.read_only} expired={()=>lockView()}/>{/key}{/if}
  {#if status?.configured}{#if status.branch&&status.branch!==status.community}<div class="alert">This deployment follows an explicitly reset branch. Branch fingerprint: <code>{status.branch}</code><button onclick={()=>{if(confirm('Trust this separate branch? It does not merge with your former branch. Verify its fingerprint independently.'))run(async()=>{if(portable)portablePin={community:status.community,tip:status.branch};else localStorage.setItem('nightbuoy-pin',JSON.stringify({community:status.community,tip:status.branch}));if(identity)await load();notice='Branch explicitly selected.';});}}>Choose this branch</button></div>{/if}{/if}
  {#if !status}<p>Loading the community…</p>
  {:else if status.mode==='portable'&&!status.connected}

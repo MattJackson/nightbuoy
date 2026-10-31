@@ -74,6 +74,7 @@ pub struct PendingDraft {
 pub const MAX_PENDING_ITEMS: usize = 100;
 pub const MAX_PENDING_BYTES: usize = 16 * 1024 * 1024;
 pub struct Client {
+    pub presence: crate::client_presence::PresenceState,
     pub reading: crate::client_reading::ReadingPreferences,
     pub connection: Connection,
     pub remote: Remote,
@@ -174,6 +175,7 @@ impl Client {
         connection.checkpoint = protocol::head(&data.archive)?;
         let mut client = Self {
             reading: Default::default(),
+            presence: Default::default(),
             connection,
             remote,
             identity,
@@ -832,6 +834,7 @@ mod tests {
             pending: None,
             pending_queue: Default::default(),
             reading: Default::default(),
+            presence: Default::default(),
         };
         client.reading.state = Some(state.clone());
         // Exercise local backup after the membership cache reports revocation.
@@ -951,6 +954,7 @@ mod tests {
         let metadata = MetadataKey::from_epoch(&old_key);
         let mut client = Client {
             reading: Default::default(),
+            presence: Default::default(),
             connection: Connection {
                 version: 2,
                 primary: backend,

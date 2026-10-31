@@ -258,7 +258,15 @@ pub async fn run(args: &[String]) -> anyhow::Result<()> {
         {
             client.reading.warning = e.to_string();
         }
-        interface(&mut client).await?;
+        let result = interface(&mut client).await;
+        if client.presence.session.is_some() {
+            let _ = tokio::time::timeout(
+                Duration::from_secs(3),
+                client.set_presence(false, crate::presence::now()),
+            )
+            .await;
+        }
+        result?;
     }
     if let Some(path) = o.export_reading {
         crate::client_crypto::write_private_file(&path, &client.export_reading()?)?;
@@ -308,7 +316,7 @@ async fn interface(client: &mut Client) -> anyhow::Result<()> {
     let _restore = Restore;
     let mut selected = 0usize;
     let mut status = format!(
-        "↑↓ select · n new · Enter reply · l lock · w watch · m mark thread read · a all read · b reading backup · R reload state · r refresh · q quit\n{} unread · Since last visit: {} topics, {} replies, {} mentions. {}",
+        "↑↓ select · n new · Enter reply · l lock · w watch · m mark thread read · a all read · b backup · R reload · u members · o visibility · r refresh · q quit\nInvisible by default · {} unread · Since last visit: {} topics, {} replies, {} mentions. {}",
         client.reading.summary.total_unread,
         client.reading.catchup.topics,
         client.reading.catchup.replies,
@@ -322,6 +330,8 @@ async fn interface(client: &mut Client) -> anyhow::Result<()> {
     let mut refreshed = Instant::now();
     let mut confirm_quit = false;
     let mut confirm_discard = false;
+    let mut people = false;
+    let mut confirm_presence = false;
     loop {
         let objects = client.objects();
         let mut objects = objects.into_iter().collect::<Vec<_>>();
@@ -345,6 +355,10 @@ async fn interface(client: &mut Client) -> anyhow::Result<()> {
             if let Some(path)=&export_path {
                 let description=if export_reading {"private reading-state backup".to_string()}else{format!("{} private encrypted submission(s)",client.pending_count())};
                 frame.render_widget(Paragraph::new(format!("Save {description}\n\n{path}▏\n\nChoose a new filename. Existing files are preserved.")).wrap(Wrap{trim:false}).block(Block::default().borders(Borders::ALL).title(if export_reading {"Export reading state · Enter save · Esc return"}else{"Export pending · Enter save · Esc return"})),areas[0]);
+            } else if people && draft.is_none() {
+                let now=crate::presence::now();
+                let rows=client.presence.entries.iter().filter(|p|p.expires>now&&p.epoch==client.data.view().epoch&&client.data.view().members.get(&p.member).is_some_and(|m|m.status=="active")).map(|p|format!("member-{} · expires in {}s",&p.member[..10],(p.expires-now)/1000)).collect::<Vec<_>>().join("\n");
+                frame.render_widget(Paragraph::new(format!("Visibility: {}\n\n{}\n\nRecent activity is a signed, expiring hint, not proof someone is online. Provider history may retain activity. u returns; o changes your visibility.",if client.presence.session.is_some(){"sharing recent activity"}else{"invisible"},if rows.is_empty(){"No recent activity shared."}else{&rows})).wrap(Wrap{trim:false}).block(Block::default().borders(Borders::ALL).title("Members · recently active")),areas[0]);
             } else if let Some(d) = &draft {
                 let text = if d.field == 0 {
                     format!("Title: {}▏\n\n{}", d.title, d.body)
@@ -451,6 +465,20 @@ async fn interface(client: &mut Client) -> anyhow::Result<()> {
                     Err(e) => format!("Refresh failed: {e}"),
                 };
                 refreshed = Instant::now();
+                if client.presence.session.is_some() {
+                    if let Err(e) = client.set_presence(true, crate::presence::now()).await {
+                        client.presence.warning = e.to_string();
+                    }
+                } else if people && let Err(e) = client.read_presence(crate::presence::now()).await
+                {
+                    client.presence.warning = e.to_string();
+                }
+                if !client.presence.warning.is_empty() {
+                    status = format!(
+                        "Activity update failed: {}. Previous hints expire automatically (up to two minutes including clock tolerance).",
+                        client.presence.warning
+                    );
+                }
             }
             continue;
         }
@@ -459,6 +487,9 @@ async fn interface(client: &mut Client) -> anyhow::Result<()> {
         };
         if k.kind != KeyEventKind::Press {
             continue;
+        }
+        if k.code != KeyCode::Char('o') {
+            confirm_presence = false;
         }
         if k.code != KeyCode::Char('R') {
             confirm_read_reload = false;
@@ -613,6 +644,18 @@ async fn interface(client: &mut Client) -> anyhow::Result<()> {
             continue;
         }
         match k.code {
+            KeyCode::Char('u')=>{
+                people = !people;
+                if people{status=match client.read_presence(crate::presence::now()).await{Ok(())=>"Members · o shares recent activity after confirmation; u returns.".into(),Err(e)=>format!("Recent activity unavailable: {e}")};}
+            }
+            KeyCode::Char('o')=>{
+                if client.presence.session.is_none()&&!confirm_presence{
+                    status="Press o again to share recent activity with current forum key holders. It renews while browsing; provider history may retain it. Another key cancels.".into();confirm_presence=true;
+                }else{
+                    let enabled=client.presence.session.is_none();
+                    status=match client.set_presence(enabled,crate::presence::now()).await{Ok(())=>if enabled{"Sharing recent activity · o makes you invisible.".into()}else{"Invisible · live session key forgotten.".into()},Err(e)=>format!("Activity update failed: {e}. Old hints expire automatically (up to two minutes including clock tolerance).")};confirm_presence=false;
+                }
+            }
             KeyCode::Char('v') if client.has_pending() => match client.pending_draft() {
                 Ok(p) => {
                     let field = usize::from(matches!(p.kind.as_str(), "reply" | "delete"));

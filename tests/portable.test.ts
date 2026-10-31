@@ -183,6 +183,17 @@ finally:
   await cold.call('connect',{connection:(await cold.call('resolve',{url:root,provider_token:'synthetic-only-token'})).connection,access});
   await authenticate(cold,owner);
   const updated=await cold.call('connection');assert.equal(updated.primary.salt,primary.salt);
+  const epochLocator=await privateLocator(owner,community,'epoch-admission-test');
+  const epochFrame=c.b64(await sealPrivate(owner,community,'epoch-admission-test',{synthetic:true}));
+  const epochBinding={community,branch:community,member:owner.device.id,locator:epochLocator};
+  const beforeEpochDenial=new Map([...backend.objects].map(([k,v])=>[k,v.sha]));
+  await assert.rejects(cold.call('private-read',{...epochBinding,epoch:1}),/forum epoch changed/);
+  await assert.rejects(cold.call('private-write',{...epochBinding,epoch:1,frame:epochFrame}),/forum epoch changed/);
+  assert.deepEqual(new Map([...backend.objects].map(([k,v])=>[k,v.sha])),beforeEpochDenial);
+  assert.equal(await cold.call('private-read',{...epochBinding,epoch:2}),null);
+  await cold.call('private-write',{...epochBinding,epoch:2,frame:epochFrame});
+  assert.equal((await cold.call('private-read',{...epochBinding,epoch:2})).frame,epochFrame);
+
   await assert.rejects(cold.call('replica-copy',{backend:replica,access:{backend:replicaId,token:'synthetic-only-token'}}),/does not unlock/);
   await cold.call('replica-copy',{backend:replica,access:{backend:replicaId,token:'synthetic-only-token'},metadata_keys:[await metadataKey(first)]});
   const backupReader=await client(app.origin);const backupRoot=backup.endpoint+'/owner/repo/tree/main/cold-backup';

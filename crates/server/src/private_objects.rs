@@ -1,5 +1,5 @@
-//! Bounded, owner-encrypted mutable state outside permanent forum history.
-//! The caller authenticates membership; only the owning client can decrypt frames.
+//! Bounded encrypted client state outside permanent forum history.
+//! Callers authenticate membership and choose owner-only or explicitly shared keys.
 use crate::{
     crypto::*,
     remote::{Blob, Remote},
@@ -18,7 +18,7 @@ fn path(locator: &str) -> anyhow::Result<String> {
         locator.to_ascii_lowercase()
     ))
 }
-fn validate(frame: &[u8]) -> anyhow::Result<()> {
+pub(crate) fn validate(frame: &[u8]) -> anyhow::Result<()> {
     anyhow::ensure!(
         frame.len() >= 4125
             && frame.len() <= MAX_PRIVATE_OBJECT
