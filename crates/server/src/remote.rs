@@ -317,10 +317,30 @@ impl Remote {
         let bytes = if v["encoding"] == "base64" {
             decode(&v["content"].as_str().unwrap_or("").replace('\n', ""))?
         } else {
-            // Fetch raw using the SAME fixed origin and credential path; never follow download_url.
-            bounded(
-                self.auth(self.client.get(self.url(&p)))
+            // GitHub omits inline content above 1 MiB. Pin the raw fetch to
+            // the immutable blob, not the mutable branch read above: otherwise
+            // a concurrent update could pair new bytes with an old CAS version.
+            let raw = if self.backend.kind == "github" {
+                anyhow::ensure!(
+                    matches!(version.len(), 40 | 64)
+                        && version.bytes().all(|b| b.is_ascii_hexdigit()),
+                    "invalid backend blob version"
+                );
+                self.client.get(format!(
+                    "{}/repos/{}/{}/git/blobs/{}",
+                    self.backend.endpoint.trim_end_matches('/'),
+                    self.backend.owner,
+                    self.backend.repository,
+                    version
+                ))
+            } else {
+                self.client
+                    .get(self.url(&p))
                     .query(&[("ref", &self.backend.branch)])
+            };
+            // Keep the configured origin/auth path; never follow download_url.
+            bounded(
+                self.auth(raw)
                     .header("Accept", "application/vnd.github.raw+json")
                     .send()
                     .await?,
@@ -448,4 +468,86 @@ pub fn s3_transport(proxy: Option<&str>) -> anyhow::Result<StrictS3Transport> {
         b = b.proxy(reqwest_s3_transport::Proxy::all(p)?);
     }
     Ok(StrictS3Transport(b.build()?))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::{
+        Json, Router, extract::State, http::HeaderMap, response::IntoResponse, routing::get,
+    };
+    use std::sync::Arc;
+
+    #[tokio::test]
+    async fn github_large_reads_pin_raw_bytes_to_the_observed_blob() {
+        let original = Arc::new(vec![17u8; 1024 * 1024 + 91]);
+        async fn contents(headers: HeaderMap) -> axum::response::Response {
+            // A branch moves between the metadata read and any unpinned raw read.
+            if headers
+                .get("accept")
+                .is_some_and(|v| v == "application/vnd.github.raw+json")
+            {
+                return vec![99u8; 1024 * 1024 + 91].into_response();
+            }
+            Json(json!({"sha":"1111111111111111111111111111111111111111",
+                "encoding":"none","content":"","size":1024*1024+91,
+                "download_url":"https://untrusted.invalid/do-not-fetch"}))
+            .into_response()
+        }
+        async fn blob(State(bytes): State<Arc<Vec<u8>>>, headers: HeaderMap) -> Vec<u8> {
+            assert_eq!(headers["authorization"], "Bearer synthetic-only-token");
+            assert_eq!(headers["accept"], "application/vnd.github.raw+json");
+            (*bytes).clone()
+        }
+        let app = Router::new()
+            .route("/repos/owner/repo/contents/forum/object", get(contents))
+            .route(
+                "/repos/owner/repo/contents/forum/invalid",
+                get(|| async {
+                    Json(json!({"sha":"../../escape","encoding":"none","content":""}))
+                }),
+            )
+            .route(
+                "/repos/owner/repo/git/blobs/1111111111111111111111111111111111111111",
+                get(blob),
+            )
+            .with_state(original.clone());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let backend = Backend {
+            kind: "github".into(),
+            endpoint,
+            namespace: "forum".into(),
+            salt: b64([1; 32]),
+            owner: "owner".into(),
+            repository: "repo".into(),
+            branch: "main".into(),
+            bucket: String::new(),
+            region: "us-east-1".into(),
+        };
+        let remote = Remote::new(
+            backend.clone(),
+            Access {
+                backend: backend.id().unwrap(),
+                token: "synthetic-only-token".into(),
+                ..Default::default()
+            },
+            true,
+        )
+        .unwrap();
+        let result = remote.get("object").await;
+        let invalid = remote.get("invalid").await;
+        server.abort();
+        let result = result.unwrap().unwrap();
+        assert_eq!(result.version, "1111111111111111111111111111111111111111");
+        assert_eq!(result.bytes, *original);
+        assert!(
+            invalid
+                .err()
+                .unwrap()
+                .to_string()
+                .contains("invalid backend blob version")
+        );
+    }
 }

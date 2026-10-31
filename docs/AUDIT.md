@@ -10,6 +10,12 @@ A browser regression also exposed session bootstrap replacing a busy connected s
 
 Milestone validation passed: 27 Rust tests, strict Clippy, Svelte checks with zero diagnostics, 13 text/protocol/crypto/private tests, six native/provider tests, four portable browser checks and five retained legacy browser checks. The independent reviewer rechecked the removed-parent and busy-bootstrap fixes and found no further concrete correctness or permission issues in these changes. The review was read-only and did not independently rerun runtime tests. Remaining release gates elsewhere in this document still apply.
 
+## GitHub large-object read follow-up
+
+GitHub omits inline content for objects above 1 MiB. The old fallback fetched raw content from the mutable branch after observing its SHA, which could pair newer bytes with an older conditional-write version. The fallback now validates the SHA and fetches the immutable blob from the configured API origin using the same redirect-disabled authenticated client. It ignores provider-supplied download URLs. A regression serves different bytes from the changed branch and checks the original >1 MiB blob/version pairing and refusal of a path-traversal SHA. Strict Clippy passes.
+
+The opt-in live GitHub script now uses opaque format v2 and publishes only synthetic data on a temporary branch. Executed acceptance passed encrypted creation, a 900 KiB attachment producing >1 MiB stored objects, a cold-session read, simultaneous conditional publication with exactly one winner, loser retry and independent browser verification/decryption. The temporary branch was removed; the default branch was not modified. This is one repository/account acceptance, not a general provider availability or retention guarantee. API behavior is documented in [GitHub Contents](https://docs.github.com/en/rest/repos/contents#get-repository-content) and [Git blobs](https://docs.github.com/en/rest/git/blobs#get-a-blob).
+
 Date: 2026-10-30. Reviewer: independent read-only review agent, separate from the implementation agent. This is not professional security certification. Findings describe the pre-remediation snapshot; original line references can move as fixes are applied.
 
 ## Initial disposition
