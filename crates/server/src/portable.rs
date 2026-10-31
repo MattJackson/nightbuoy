@@ -8,8 +8,10 @@ use crate::{
 };
 use axum::{
     Json, Router,
-    body::Bytes,
-    extract::{DefaultBodyLimit, Path, Request, State},
+    body::{Body, Bytes, to_bytes},
+    extract::{
+        DefaultBodyLimit, Path, RawPathParams, Request, State, rejection::RawPathParamsRejection,
+    },
     http::{HeaderMap, StatusCode},
     middleware::{self, Next},
     response::{IntoResponse, Response},
@@ -23,7 +25,21 @@ use std::{
     sync::Arc,
     time::{Duration, Instant},
 };
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, Semaphore};
+struct Ingress {
+    normal: Arc<Semaphore>,
+    posts: Arc<Semaphore>,
+    recovery: Arc<Semaphore>,
+}
+impl Default for Ingress {
+    fn default() -> Self {
+        Self {
+            normal: Arc::new(Semaphore::new(32)),
+            posts: Arc::new(Semaphore::new(8)),
+            recovery: Arc::new(Semaphore::new(2)),
+        }
+    }
+}
 #[derive(Clone)]
 pub struct App {
     sessions: Arc<Mutex<HashMap<String, Arc<Mutex<Session>>>>>,
@@ -33,6 +49,7 @@ pub struct App {
     testing: bool,
     allowed: Option<Connection>,
     branding: Option<crate::branding::Branding>,
+    ingress: Arc<Ingress>,
 }
 struct Session {
     csrf: String,
@@ -55,6 +72,7 @@ struct Session {
     authenticated: bool,
     plan: Option<Plan>,
     requests: Vec<Value>,
+    ingress: Arc<Semaphore>,
 }
 impl Session {
     fn empty(csrf: String, created: Instant, operator_checkpoint: Option<String>) -> Self {
@@ -79,6 +97,7 @@ impl Session {
             authenticated: false,
             plan: None,
             requests: vec![],
+            ingress: Arc::new(Semaphore::new(4)),
         }
     }
 }
@@ -514,7 +533,62 @@ impl Session {
 fn hex_id(s: &str) -> bool {
     s.len() == 64 && s.bytes().all(|c| c.is_ascii_hexdigit())
 }
-async fn security(State(app): State<App>, req: Request, next: Next) -> Response {
+fn ingress_error(status: StatusCode, message: &str) -> Response {
+    let mut response = (status, Json(json!({"error":message}))).into_response();
+    if status == StatusCode::TOO_MANY_REQUESTS {
+        response
+            .headers_mut()
+            .insert("retry-after", "1".parse().unwrap());
+    }
+    response
+        .headers_mut()
+        .insert("cache-control", "no-store".parse().unwrap());
+    response
+}
+fn body_limit(
+    app: &App,
+    s: &Session,
+    action: &str,
+) -> std::result::Result<usize, (StatusCode, String)> {
+    let protected = matches!(
+        action,
+        "prepare" | "commit" | "recover-prepare" | "private-read" | "private-write"
+    );
+    if protected && !s.authenticated {
+        return Err((StatusCode::UNAUTHORIZED, "sign in required".into()));
+    }
+    let personal_empty =
+        app.allowed.is_none() && s.remote.is_some() && s.data.is_none() && !s.locked;
+    if action == "recover-prepare" {
+        if !personal_empty {
+            return Err((
+                StatusCode::FORBIDDEN,
+                "large recovery requires a personal client connected to an empty destination"
+                    .into(),
+            ));
+        }
+        return Ok(opaque::MAX_FRAME * 2);
+    }
+    if protected
+        && !(personal_empty && matches!(action, "prepare" | "commit"))
+        && let Err(error) = s.active()
+    {
+        return Err((StatusCode::FORBIDDEN, error.to_string()));
+    }
+    Ok(match action {
+        "private-write" => 384 * 1024,
+        "prepare" if s.active().is_ok() => 10 * 1024 * 1024,
+        _ => 256 * 1024,
+    })
+}
+
+type RawParams = std::result::Result<RawPathParams, RawPathParamsRejection>;
+async fn security(
+    State(app): State<App>,
+    params: RawParams,
+    mut req: Request,
+    next: Next,
+) -> Response {
     let expected = url::Url::parse(&app.origin).unwrap();
     let host = expected[url::Position::BeforeHost..url::Position::AfterPort].to_string();
     let valid_host = req.headers().get("host").and_then(|h| h.to_str().ok()) == Some(&host);
@@ -523,7 +597,10 @@ async fn security(State(app): State<App>, req: Request, next: Next) -> Response 
     if !valid_host || !valid_origin {
         return StatusCode::FORBIDDEN.into_response();
     }
-    if req.uri().path().starts_with("/api/") && req.uri().path() != "/api/session" {
+    let api = req.uri().path().starts_with("/api/");
+    let mut limit = 0;
+    let mut session_slots = None;
+    if api && req.uri().path() != "/api/session" {
         let session = if let Some(cookie) = crate::api::cookie(req.headers(), "nb_portable") {
             app.sessions.lock().await.get(&hash(cookie)).cloned()
         } else {
@@ -553,6 +630,80 @@ async fn security(State(app): State<App>, req: Request, next: Next) -> Response 
         {
             return StatusCode::FORBIDDEN.into_response();
         }
+        session_slots = Some(s.ingress.clone());
+        if req.method() != axum::http::Method::GET {
+            // Use the router's decoded action, including percent-encoded aliases.
+            let action = params
+                .as_ref()
+                .ok()
+                .and_then(|p| {
+                    p.iter()
+                        .find(|(key, _)| *key == "path")
+                        .map(|(_, value)| value)
+                })
+                .unwrap_or("");
+            limit = match body_limit(&app, &s, action) {
+                Ok(limit) => limit,
+                Err((status, message)) => return ingress_error(status, &message),
+            };
+        }
+    }
+    // Admission precedes body collection; a rejected stream is never polled.
+    let mut _session_permit = None;
+    let mut _global_permit = None;
+    if api {
+        if let Some(length) = req.headers().get(axum::http::header::CONTENT_LENGTH) {
+            let Some(length) = length.to_str().ok().and_then(|v| v.parse::<u64>().ok()) else {
+                return ingress_error(StatusCode::BAD_REQUEST, "invalid content length");
+            };
+            if length > limit as u64 {
+                return ingress_error(StatusCode::PAYLOAD_TOO_LARGE, "request body too large");
+            }
+        }
+        if let Some(slots) = session_slots {
+            _session_permit = match slots.try_acquire_owned() {
+                Ok(permit) => Some(permit),
+                Err(_) => {
+                    return ingress_error(
+                        StatusCode::TOO_MANY_REQUESTS,
+                        "session request capacity reached; retry shortly",
+                    );
+                }
+            };
+        }
+        let global = if limit > 10 * 1024 * 1024 {
+            app.ingress.recovery.clone()
+        } else if limit > 384 * 1024 {
+            app.ingress.posts.clone()
+        } else {
+            app.ingress.normal.clone()
+        };
+        _global_permit = match global.try_acquire_owned() {
+            Ok(permit) => Some(permit),
+            Err(_) => {
+                return ingress_error(
+                    StatusCode::TOO_MANY_REQUESTS,
+                    "request capacity reached; retry shortly",
+                );
+            }
+        };
+        let (parts, body) = req.into_parts();
+        let timeout = if limit > 384 * 1024 {
+            Duration::from_secs(300)
+        } else {
+            Duration::from_secs(120)
+        };
+        let bytes = match tokio::time::timeout(timeout, to_bytes(body, limit)).await {
+            Ok(Ok(bytes)) => bytes,
+            Ok(Err(_)) => {
+                return ingress_error(
+                    StatusCode::PAYLOAD_TOO_LARGE,
+                    "request body exceeds its limit or cannot be read",
+                );
+            }
+            Err(_) => return ingress_error(StatusCode::REQUEST_TIMEOUT, "request body timed out"),
+        };
+        req = Request::from_parts(parts, Body::from(bytes));
     }
     let mut r = next.run(req).await;
     for (k, v) in [
@@ -682,7 +833,7 @@ async fn endpoint(
    if s.active().is_ok(){let identity=format!("{}:{}",s.data.as_ref().unwrap().community(),s.device.as_ref().unwrap().id);let mut admissions=app.admissions.lock().await;admissions.retain(|_,(_,t)|t.elapsed()<Duration::from_secs(8*3600));let session_key=hash(&key);if !admission_available(&admissions,&session_key,&identity){s.authenticated=false;anyhow::bail!("this member already has two active sessions; sign out another tab first");}admissions.insert(session_key,(identity,Instant::now()));}
    json!({"ok":true})},
   "logout"=>{app.admissions.lock().await.remove(&hash(&key));s.authenticated=false;s.device=None;s.challenge=None;s.plan=None;s.metadata=None;s.metadata_history.clear();s.data=None;s.head_grants.clear();s.locked=true;json!({"ok":true})},
-  "disconnect"=>{app.admissions.lock().await.remove(&hash(&key));*s=Session::empty(s.csrf.clone(),s.created,s.operator_checkpoint.clone());json!({"ok":true})},
+  "disconnect"=>{app.admissions.lock().await.remove(&hash(&key));let ingress=s.ingress.clone();*s=Session::empty(s.csrf.clone(),s.created,s.operator_checkpoint.clone());s.ingress=ingress;json!({"ok":true})},
   "private-read"|"private-write"=>{
    if path=="private-write"{s.refresh_source(false).await?;}else{s.refresh().await?;}s.active()?;
    anyhow::ensure!(v["community"].as_str()==s.data.as_ref().map(Data::community).as_deref()&&v["branch"].as_str()==s.data.as_ref().map(Data::branch).as_deref()&&v["member"].as_str()==s.device.as_ref().map(|d|d.id.as_str()),"private state belongs to another identity or forum branch");
@@ -879,6 +1030,7 @@ async fn run_mode(open_gui: bool) -> anyhow::Result<()> {
     let app = App {
         sessions: Default::default(),
         admissions: Default::default(),
+        ingress: Default::default(),
         origin: origin.clone(),
         web: std::env::var("NIGHTBUOY_WEB").unwrap_or("web/dist".into()),
         testing,
@@ -930,7 +1082,243 @@ fn open_browser(origin: &str) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
     use tower::ServiceExt;
+    async fn ingress_fixture(active: bool) -> (App, Arc<Mutex<Session>>) {
+        let app = App {
+            sessions: Default::default(),
+            admissions: Default::default(),
+            ingress: Default::default(),
+            origin: "http://localhost:8080".into(),
+            web: "/nonexistent".into(),
+            testing: true,
+            allowed: None,
+            branding: None,
+        };
+        let mut session = Session::empty("csrf".into(), Instant::now(), None);
+        if active {
+            let f: Value =
+                serde_json::from_str(include_str!("../tests/fixtures/browser-identity.json"))
+                    .unwrap();
+            let device: Device = serde_json::from_value(f["vault"]["device"].clone()).unwrap();
+            let f: Value =
+                serde_json::from_str(include_str!("../tests/fixtures/member-state.json")).unwrap();
+            let mut data: Data = serde_json::from_value(f["data"].clone()).unwrap();
+            // The gate consumes an already authenticated membership cache, not a new archive.
+            let view:View=serde_json::from_value(json!({"policy":{"name":"Ingress fixture","skin":"nightbuoy","admission":"approval","history":true,"identity":"key"},"epoch":1,"members":{(device.id.clone()):{"device":device,"role":"member","status":"active","floor":1}},"grants":{},"publishers":[]})).unwrap();
+            data.views.insert(data.tip.clone(), Arc::new(view));
+            session.data = Some(data);
+            session.device = Some(device);
+            session.authenticated = true;
+        }
+        let session = Arc::new(Mutex::new(session));
+        app.sessions
+            .lock()
+            .await
+            .insert(hash("ingress-session"), session.clone());
+        (app, session)
+    }
+    fn ingress_request(path: &str, body: Body) -> Request {
+        Request::builder()
+            .method("POST")
+            .uri(format!("/api/{path}"))
+            .header("host", "localhost:8080")
+            .header("origin", "http://localhost:8080")
+            .header("cookie", "nb_portable=ingress-session")
+            .header("x-nightbuoy-csrf", "csrf")
+            .body(body)
+            .unwrap()
+    }
+    fn counted_body(bytes: Bytes, count: Arc<AtomicUsize>) -> Body {
+        Body::from_stream(futures::stream::once(async move {
+            count.fetch_add(1, AtomicOrdering::SeqCst);
+            Ok::<_, std::io::Error>(bytes)
+        }))
+    }
+    #[tokio::test]
+    async fn protected_ingress_rejects_unauthenticated_streams_before_polling() {
+        let (app, _) = ingress_fixture(false).await;
+        for path in [
+            "prepare",
+            "%70repare",
+            "commit",
+            "private-write",
+            "recover-prepare",
+        ] {
+            let count = Arc::new(AtomicUsize::new(0));
+            let request = ingress_request(
+                path,
+                counted_body(Bytes::from_static(b"not polled"), count.clone()),
+            );
+            assert_eq!(
+                router(app.clone()).oneshot(request).await.unwrap().status(),
+                StatusCode::UNAUTHORIZED
+            );
+            assert_eq!(count.load(AtomicOrdering::SeqCst), 0);
+        }
+    }
+    #[tokio::test]
+    async fn ingress_admission_bounds_same_session_and_global_work_before_polling() {
+        let (app, session) = ingress_fixture(false).await;
+        let slots = session.lock().await.ingress.clone();
+        let held = slots.clone().acquire_many_owned(4).await.unwrap();
+        let count = Arc::new(AtomicUsize::new(0));
+        let response = router(app.clone())
+            .oneshot(ingress_request(
+                "metadata",
+                counted_body(Bytes::from_static(b"{}"), count.clone()),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(count.load(AtomicOrdering::SeqCst), 0);
+        drop(held);
+        let held = app
+            .ingress
+            .normal
+            .clone()
+            .acquire_many_owned(32)
+            .await
+            .unwrap();
+        let count = Arc::new(AtomicUsize::new(0));
+        assert_eq!(
+            router(app.clone())
+                .oneshot(ingress_request(
+                    "metadata",
+                    counted_body(Bytes::from_static(b"{}"), count.clone())
+                ))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::TOO_MANY_REQUESTS
+        );
+        assert_eq!(count.load(AtomicOrdering::SeqCst), 0);
+        assert_eq!(slots.available_permits(), 4);
+        drop(held);
+        let count = Arc::new(AtomicUsize::new(0));
+        assert_eq!(
+            router(app.clone())
+                .oneshot(ingress_request(
+                    "metadata",
+                    counted_body(Bytes::from_static(b"{}"), count.clone())
+                ))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(count.load(AtomicOrdering::SeqCst), 1);
+        assert_eq!(slots.available_permits(), 4);
+        assert_eq!(app.ingress.normal.available_permits(), 32);
+    }
+    #[tokio::test]
+    async fn ingress_limits_apply_to_streams_and_admit_large_member_posts() {
+        let (app, _) = ingress_fixture(false).await;
+        let count = Arc::new(AtomicUsize::new(0));
+        let mut declared = ingress_request(
+            "metadata",
+            counted_body(Bytes::from_static(b"unread"), count.clone()),
+        );
+        declared
+            .headers_mut()
+            .insert("content-length", (300 * 1024).to_string().parse().unwrap());
+        assert_eq!(
+            router(app.clone())
+                .oneshot(declared)
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::PAYLOAD_TOO_LARGE
+        );
+        assert_eq!(count.load(AtomicOrdering::SeqCst), 0);
+        let count = Arc::new(AtomicUsize::new(0));
+        assert_eq!(
+            router(app)
+                .oneshot(ingress_request(
+                    "metadata",
+                    counted_body(Bytes::from(vec![b' '; 300 * 1024]), count.clone())
+                ))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::PAYLOAD_TOO_LARGE
+        );
+        assert_eq!(count.load(AtomicOrdering::SeqCst), 1);
+        let (app, session) = ingress_fixture(true).await;
+        assert_eq!(
+            body_limit(&app, &*session.lock().await, "private-write").unwrap(),
+            384 * 1024
+        );
+        let count = Arc::new(AtomicUsize::new(0));
+        let response = router(app.clone())
+            .oneshot(ingress_request(
+                "prepare",
+                counted_body(Bytes::from(vec![b' '; 6 * 1024 * 1024]), count.clone()),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(
+            response.status(),
+            StatusCode::BAD_REQUEST,
+            "large member input reaches endpoint validation rather than the body limit"
+        );
+        assert_eq!(count.load(AtomicOrdering::SeqCst), 1);
+        assert_eq!(app.ingress.posts.available_permits(), 8);
+    }
+    #[tokio::test]
+    async fn large_recovery_is_personal_authenticated_and_empty_only() {
+        let (mut app, session) = ingress_fixture(false).await;
+        let backend = Backend {
+            kind: "forgejo".into(),
+            endpoint: "http://127.0.0.1:9".into(),
+            namespace: "test".into(),
+            salt: b64(random::<32>()),
+            owner: "owner".into(),
+            repository: "repo".into(),
+            branch: "main".into(),
+            bucket: String::new(),
+            region: "us-east-1".into(),
+        };
+        let mut s = session.lock().await;
+        s.remote = Some(
+            Remote::new(
+                backend.clone(),
+                Access {
+                    backend: backend.id().unwrap(),
+                    ..Default::default()
+                },
+                true,
+            )
+            .unwrap(),
+        );
+        assert_eq!(
+            body_limit(&app, &s, "recover-prepare").err().unwrap().0,
+            StatusCode::UNAUTHORIZED
+        );
+        s.authenticated = true;
+        assert_eq!(
+            body_limit(&app, &s, "recover-prepare").unwrap(),
+            opaque::MAX_FRAME * 2
+        );
+        s.locked = true;
+        assert_eq!(
+            body_limit(&app, &s, "recover-prepare").err().unwrap().0,
+            StatusCode::FORBIDDEN
+        );
+        s.locked = false;
+        app.allowed = Some(Connection {
+            version: 2,
+            primary: backend,
+            replicas: vec![],
+            community: String::new(),
+            branch_pin: String::new(),
+            checkpoint: String::new(),
+        });
+        assert_eq!(
+            body_limit(&app, &s, "recover-prepare").err().unwrap().0,
+            StatusCode::FORBIDDEN
+        );
+    }
     #[test]
     fn switching_identity_cannot_bypass_member_session_quota() {
         let mut registry = HashMap::new();
@@ -946,6 +1334,7 @@ mod tests {
         let app = App {
             sessions: Default::default(),
             admissions: Default::default(),
+            ingress: Default::default(),
             origin: "http://localhost:8080".into(),
             web: "/nonexistent".into(),
             testing: true,
@@ -988,6 +1377,7 @@ mod tests {
         let app = App {
             sessions: Default::default(),
             admissions: Default::default(),
+            ingress: Default::default(),
             origin: "http://localhost:8080".into(),
             web: "/nonexistent".into(),
             testing: true,
@@ -1015,6 +1405,7 @@ mod tests {
             authenticated: false,
             plan: None,
             requests: vec![],
+            ingress: Arc::new(Semaphore::new(4)),
         };
         app.sessions
             .lock()
