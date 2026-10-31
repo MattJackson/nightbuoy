@@ -1,5 +1,9 @@
 # Independent architecture and code review
 
+## File selection during sign-in/loading
+
+CI exposed a pending-import race: verified posts render before sign-in finishes its last private-state read, and the previous operation guard silently ignored file selection while busy. Imports now capture the File immediately, wait for the current operation, recheck identity/root/branch and execute serially. Pending imports recheck identity/branch after decryption and storage awaits. The same queue covers reading backups, membership requests, archive catch-up and both identity recovery inputs. Background refresh preserves user notices. A deterministic browser regression blocks the final sign-in read, selects a pending file, releases the read and verifies import/publication. Four portable and five legacy browser checks pass, along with zero-diagnostic Svelte checks. Independent static review identified the remaining branch-recovery input; that input now uses the same queue.
+
 ## Sideload packaging review in progress
 
 AppImage, Flatpak, Snap and scratch-container recipes reuse the same-run checksummed static binary and verify its source commit. The planned matrix uses native x86-64/ARM64 runners; definitions are not runtime evidence. Rehearsals require disposable Actions runners, refuse installed NightBuoy Flatpak/Snap packages, restrict runtime environment variables, and independently attempt owned-resource cleanup. Container cleanup tracks its daemon-owned name rather than relying only on a killed Docker CLI. The scratch image includes platform CA roots and their copyright notice. A non-network `check-transports` command now initializes both provider TLS stacks in package smoke checks; UI-only testing previously missed absent S3 roots.
