@@ -34,10 +34,20 @@ jobs:
           sudo systemctl start snapd.socket
           sudo snap wait system seed.loaded
           sudo snap install core24
+          # Snap needs the real user manager to create its confined cgroup.
+          sudo loginctl enable-linger "$USER"
+          nb_runtime="/run/user/$(id -u)"
+          for _ in $(seq 1 30); do
+            [ -S "$nb_runtime/bus" ] && break
+            sleep 1
+          done
+          test -S "$nb_runtime/bus"
+          echo "XDG_RUNTIME_DIR=$nb_runtime" >> "$GITHUB_ENV"
+          echo "DBUS_SESSION_BUS_ADDRESS=unix:path=$nb_runtime/bus" >> "$GITHUB_ENV"
           flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
           flatpak install --user --noninteractive --arch="$ARCH" flathub org.freedesktop.Platform//25.08 org.freedesktop.Sdk//25.08
       - name: Build and run each sideload format
-        run: dbus-run-session -- node scripts/package-sideload.mjs '${{ matrix.target }}'
+        run: node scripts/package-sideload.mjs '${{ matrix.target }}'
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: nightbuoy-${{ matrix.target }}-sideload
