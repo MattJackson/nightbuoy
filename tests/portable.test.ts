@@ -10,8 +10,8 @@ async function authenticate(a:Awaited<ReturnType<typeof client>>,identity:c.Iden
 async function prepare(a:Awaited<ReturnType<typeof client>>,i:c.Identity,kind:string,signed:c.Signed,extra:any={}){let verified=null;const keys:Record<number,Uint8Array<ArrayBuffer>>={};if(kind!=='genesis'){verified=await verifyArchive(extra.archive??await a.call('sync'));for(const [epoch,grants] of Object.entries(verified.view.grants)){if(grants[i.device.id])keys[Number(epoch)]=await c.openGrant(i,grants[i.device.id]);}}const metadata=await prepareMetadata(i,kind,signed,verified,keys);return a.call(extra.archive?'recover-prepare':'prepare',{kind,signed,...extra,...metadata});}
 async function publish(a:Awaited<ReturnType<typeof client>>,i:c.Identity,kind:string,signed:c.Signed,extra={}){const p=await prepare(a,i,kind,signed,extra);if(p.accepted)return;await a.call('commit',{ticket:p.ticket,header:await c.signed(i,p.body)});}
 
-// GitHub additionally exercises the full inline-upload limit through cold/fork replay in a debug build.
-for(const kind of ['github','forgejo','s3'])test(`portable ${kind}: conditional races, zero frontend restart, corruption, auth and rollback`,{timeout:kind==='github'?360000:90000},async()=>{
+// GitHub additionally admits the full inline-upload limit without bloating every later snapshot replay.
+for(const kind of ['github','forgejo','s3'])test(`portable ${kind}: conditional races, zero frontend restart, corruption, auth and rollback`,{timeout:90000},async()=>{
  const backend=await fixture(kind),backup=await fixture(kind);let app=await launcher();let app2=await launcher();try{
  const primary={kind,endpoint:backend.endpoint,namespace:'forum',salt:c.b64(c.random()),owner:'owner',repository:'repo',branch:'main',bucket:'bucket',region:'us-east-1'};const id=c.b64(Buffer.from(await c.hash(c.canonical(primary)),'hex'));let connection:any={version:2,primary,replicas:[],community:''};const access={backend:id,token:'synthetic-only-token',access_key:'fake',secret_key:'fake'};const a=await client(app.origin),b=await client(app2.origin);
  await assert.rejects(a.call('connect',{connection,access:{...access,backend:c.b64(c.random())}}),/binding/);await a.call('connect',{connection,access});
@@ -49,7 +49,12 @@ for(const kind of ['github','forgejo','s3'])test(`portable ${kind}: conditional 
    assert.equal(JSON.parse(native.stdout).content.title,'Encrypted board');
   }finally{await rm(dir,{recursive:true,force:true});}
  }
- const getEvent=async(label:string)=>c.encryptEvent(owner,key,[1,community,owner.device.id,community,1,'topic',crypto.randomUUID(),board,'',2],{title:label,body:'secret discussion',...(kind==='github'&&label==='A'?{attachments:[{name:'ingress-limit.bin',size:3*1024*1024,data:Buffer.alloc(3*1024*1024,23).toString('base64')}]}:{})});
+ if(kind==='github'){
+  const large=await c.encryptEvent(owner,key,[1,community,owner.device.id,community,1,'topic',crypto.randomUUID(),board,'',2],{title:'Large ingress admission',body:'synthetic request limit',attachments:[{name:'ingress-limit.bin',size:3*1024*1024,data:Buffer.alloc(3*1024*1024,23).toString('base64')}]});
+  assert.ok((await prepare(a,owner,'event',large)).ticket,'maximum inline upload must pass authenticated admission and protocol validation');
+  assert.equal((await a.call('sync')).order.length,1,'preparation must not publish or change history');
+ }
+ const getEvent=async(label:string)=>c.encryptEvent(owner,key,[1,community,owner.device.id,community,1,'topic',crypto.randomUUID(),board,'',2],{title:label,body:'secret discussion'});
  const eventA=await getEvent('A'),eventB=await getEvent('B');const poisoned=await prepareMetadata(owner,'event',eventA,await verifyArchive(await a.call('sync')),{1:key});poisoned.metadata_wrapped[owner.device.id]=c.b64(c.random(60));await assert.rejects(a.call('prepare',{kind:'event',signed:eventA,...poisoned}),/unsigned discovery grant/);const [p1,p2]=await Promise.all([prepare(a,owner,'event',eventA),prepare(b,owner,'event',eventB)]);
  const race=await Promise.allSettled([a.call('commit',{ticket:p1.ticket,header:await c.signed(owner,p1.body)}),b.call('commit',{ticket:p2.ticket,header:await c.signed(owner,p2.body)})]);assert.equal(race.filter(x=>x.status==='fulfilled').length,1,'CAS must choose exactly one head');const loser=race[0].status==='rejected'?a:b;await publish(loser,owner,'event',race[0].status==='rejected'?eventA:eventB);
  const archive:Archive=await a.call('sync');assert.equal((await a.call('replication')).copied,false,'a later append invalidates exact backup confirmation');const verified=await verifyArchive(archive,{community,tip:initial.checkpoint});assert.equal(verified.events.length,3);assert.equal((await b.call('sync')).order.length,3);

@@ -10,8 +10,11 @@ on:
       - 'package*.json'
       - 'scripts/build-proof.mjs'
       - 'scripts/package-static.mjs'
+      - 'scripts/package-sideload.mjs'
+      - 'packaging/**'
       - 'scripts/smoke-runtime.mjs'
       - '.github/workflows/packages-static.yml'
+      - '.github/workflows/packages-sideload.yml'
 permissions:
   contents: read
 concurrency:
@@ -73,3 +76,6 @@ jobs:
             dist/${{ matrix.target }}/SHA256SUMS
           if-no-files-found: error
           retention-days: 14
+  sideload:
+    needs: build
+    uses: ./.github/workflows/packages-sideload.yml

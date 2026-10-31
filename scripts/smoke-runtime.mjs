@@ -12,6 +12,8 @@ const command=emulator||binary,args=emulator?[binary]:[];
 const version=spawnSync(command,[...args,'--version'],{encoding:'utf8',timeout:15000});
 assert.equal(version.status,0);assert.match(version.stdout,/^NightBuoy \d+\.\d+\.\d+/);
 if(process.argv[3])assert.equal(version.stdout.trim(),'NightBuoy '+process.argv[3]);
+const transports=spawnSync(command,[...args,'check-transports'],{encoding:'utf8',timeout:15000});
+assert.equal(transports.status,0,transports.stderr);assert.equal(transports.stdout.trim(),'Provider TLS clients initialized.');
 const dir=await mkdtemp(join(tmpdir(),'nightbuoy-package-smoke-'));
 const probe=createServer();await new Promise(r=>probe.listen(0,'127.0.0.1',r));
 const port=probe.address().port;await new Promise(r=>probe.close(r));

@@ -14,6 +14,14 @@ async fn main() -> anyhow::Result<()> {
             println!("NightBuoy {}", env!("CARGO_PKG_VERSION"));
             return Ok(());
         }
+        Some("check-transports") => {
+            // In particular, the S3 TLS stack needs platform root certificates.
+            // This check opens no network connection and accepts no credentials.
+            let _ = reqwest::Client::builder().no_proxy().build()?;
+            let _ = nightbuoy::remote::s3_transport(None)?;
+            println!("Provider TLS clients initialized.");
+            return Ok(());
+        }
         Some("gui") => return nightbuoy::portable::run_gui().await,
         Some(command)
             if !matches!(

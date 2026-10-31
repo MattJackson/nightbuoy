@@ -27,5 +27,11 @@ try{
  run('tar',['-xf',join(out,archive),'-C',temp]);
  const extracted=join(temp,name,'nightbuoy');assert.deepEqual(await readFile(extracted),await readFile(binary));
  run(process.execPath,['scripts/smoke-runtime.mjs',extracted,version],{...process.env,NIGHTBUOY_SMOKE_EMULATOR:emulators[target]});
+ const emulator=emulators[target];
+ const missingRoots=spawnSync(emulator||extracted,[...(emulator?[extracted]:[]),'check-transports'],{
+  encoding:'utf8',timeout:15000,env:{...process.env,SSL_CERT_FILE:join(temp,'absent.pem'),SSL_CERT_DIR:join(temp,'absent-roots')},
+ });
+ assert.notEqual(missingRoots.status,0,'transport check must reject an empty platform trust store');
+ assert.match(missingRoots.stderr,/No CA certificates were loaded from the system/);
 }finally{await rm(temp,{recursive:true,force:true});}
 console.log(`Static package and extracted runtime passed for ${target}.`);

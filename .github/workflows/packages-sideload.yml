@@ -1,0 +1,52 @@
+name: Linux sideload rehearsal
+on:
+  workflow_call:
+permissions:
+  contents: read
+jobs:
+  sideload:
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {runner: ubuntu-24.04, target: x86_64-unknown-linux-musl, arch: x86_64}
+          - {runner: ubuntu-24.04-arm, target: aarch64-unknown-linux-musl, arch: aarch64}
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: 26.13.0
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          name: nightbuoy-${{ matrix.target }}
+          path: dist/${{ matrix.target }}/
+      - name: Sideload tooling and runtime
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y flatpak squashfs-tools desktop-file-utils snapd dbus-x11
+          sudo systemctl start snapd.socket
+          sudo snap wait system seed.loaded
+          sudo snap install core24
+          flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
+          flatpak install --user --noninteractive --arch="$ARCH" flathub org.freedesktop.Platform//25.08 org.freedesktop.Sdk//25.08
+      - name: Build and run each sideload format
+        run: dbus-run-session -- node scripts/package-sideload.mjs '${{ matrix.target }}'
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: nightbuoy-${{ matrix.target }}-sideload
+          path: |
+            dist/${{ matrix.target }}-sideload/*.AppImage
+            dist/${{ matrix.target }}-sideload/*.flatpak
+            dist/${{ matrix.target }}-sideload/*.snap
+            dist/${{ matrix.target }}-sideload/*-container.tar
+            dist/${{ matrix.target }}-sideload/build.json
+            dist/${{ matrix.target }}-sideload/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 14
