@@ -1,0 +1,70 @@
+name: Static Linux rehearsal
+on:
+  workflow_dispatch:
+  push:
+    branches: [dev]
+    paths:
+      - 'crates/**'
+      - 'Cargo.*'
+      - 'web/**'
+      - 'package*.json'
+      - 'scripts/build-proof.mjs'
+      - 'scripts/package-static.mjs'
+      - 'scripts/smoke-runtime.mjs'
+      - '.github/workflows/packages-static.yml'
+permissions:
+  contents: read
+concurrency:
+  group: packages-static-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [x86_64-unknown-linux-musl, aarch64-unknown-linux-musl, armv7-unknown-linux-musleabihf]
+    env:
+      CARGO_BUILD_JOBS: 3
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: 26.13.0
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec
+        with:
+          toolchain: 1.98.1
+          targets: wasm32-unknown-unknown,${{ matrix.target }}
+      - run: npm ci && npm run build
+      - name: Static build tools
+        run: sudo apt-get update && sudo apt-get install -y musl-tools cmake nasm qemu-user-static
+      - name: Pinned cross toolchain
+        if: matrix.target != 'x86_64-unknown-linux-musl'
+        run: |
+          set -euo pipefail
+          curl -fsSLo "$RUNNER_TEMP/cross.tar.gz" https://github.com/cross-rs/cross/releases/download/v0.2.5/cross-x86_64-unknown-linux-musl.tar.gz
+          echo "a486cefa6cb486971b97be321ea9dfc2e90c1979550295314a368f53fab6d588  $RUNNER_TEMP/cross.tar.gz" | sha256sum -c -
+          tar xzf "$RUNNER_TEMP/cross.tar.gz" -C "$RUNNER_TEMP" cross
+          sudo install "$RUNNER_TEMP/cross" /usr/local/bin/cross
+          echo 'CROSS_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_IMAGE=ghcr.io/cross-rs/aarch64-unknown-linux-musl:0.2.5@sha256:702154f52b2d8091671aa2c84d5582d849f949977228c735ff8462f93cc0e1e4' >> "$GITHUB_ENV"
+          echo 'CROSS_TARGET_ARMV7_UNKNOWN_LINUX_MUSLEABIHF_IMAGE=ghcr.io/cross-rs/armv7-unknown-linux-musleabihf:0.2.5@sha256:b4f481f30ceca34730a5723f717396d762d94f6eddd7e1cf7c7862d1377ff98c' >> "$GITHUB_ENV"
+      - name: Native musl build
+        if: matrix.target == 'x86_64-unknown-linux-musl'
+        run: cargo build --release --locked --target '${{ matrix.target }}' --bin nightbuoy
+      - name: Cross musl build
+        if: matrix.target != 'x86_64-unknown-linux-musl'
+        run: cross build --release --locked --target '${{ matrix.target }}' --bin nightbuoy
+      - name: Verify static linkage and round-trip archive
+        run: node scripts/package-static.mjs '${{ matrix.target }}'
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: nightbuoy-${{ matrix.target }}
+          path: |
+            dist/${{ matrix.target }}/*.tar.gz
+            dist/${{ matrix.target }}/build.json
+            dist/${{ matrix.target }}/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 14

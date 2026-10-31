@@ -6,7 +6,10 @@ import {join,resolve} from 'node:path';
 import {tmpdir} from 'node:os';
 import {createServer} from 'node:net';
 const binary=resolve(process.argv[2]||'');
-const version=spawnSync(binary,['--version'],{encoding:'utf8',timeout:15000});
+const emulator=process.env.NIGHTBUOY_SMOKE_EMULATOR;
+if(emulator&&!['qemu-arm-static','qemu-aarch64-static'].includes(emulator))throw Error('Unsupported test emulator');
+const command=emulator||binary,args=emulator?[binary]:[];
+const version=spawnSync(command,[...args,'--version'],{encoding:'utf8',timeout:15000});
 assert.equal(version.status,0);assert.match(version.stdout,/^NightBuoy \d+\.\d+\.\d+/);
 if(process.argv[3])assert.equal(version.stdout.trim(),'NightBuoy '+process.argv[3]);
 const dir=await mkdtemp(join(tmpdir(),'nightbuoy-package-smoke-'));
@@ -15,7 +18,7 @@ const port=probe.address().port;await new Promise(r=>probe.close(r));
 const origin=`http://127.0.0.1:${port}`;let child;
 try{
  if(process.platform!=='win32')await chmod(dir,0o555);
- child=spawn(binary,['portable'],{cwd:dir,env:{PATH:process.env.PATH,NIGHTBUOY_LISTEN:`127.0.0.1:${port}`,NIGHTBUOY_PUBLIC_URL:origin},stdio:'ignore'});
+ child=spawn(command,[...args,'portable'],{cwd:dir,env:{PATH:process.env.PATH,NIGHTBUOY_LISTEN:`127.0.0.1:${port}`,NIGHTBUOY_PUBLIC_URL:origin},stdio:'ignore'});
  let response;for(let i=0;i<200;i++){
   if(child.exitCode!==null)throw Error(`packaged companion exited ${child.exitCode}`);
   try{response=await fetch(origin);if(response.ok)break;}catch{}

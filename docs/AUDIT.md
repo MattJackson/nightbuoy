@@ -1,5 +1,9 @@
 # Independent architecture and code review
 
+## Static Linux rehearsal recipes
+
+The musl matrix targets x86-64, ARM64 and ARMv7. Cross tool/download hashes and container digests are pinned; the artifact check rejects a dynamic ELF interpreter, compares the extracted binary and executes the embedded UI/API smoke check. Only fixed QEMU executable names are accepted as test wrappers. Static inspection found no concrete issue, actionlint and JavaScript syntax checks pass, and the unchanged native smoke behavior passes locally. Cross-build/runtime results are still pending; definitions are not evidence of successful platform support.
+
 ## Session switching and editor cleanup follow-up
 
 Explicit Switch forum resets the companion to an empty session while preserving its original expiry, CSRF token and operator pin. It drops remote transports/credentials, cached history, metadata keys, discovery, authentication, admissions and prepared writes. Hosted destination restrictions remain on the application. The browser clears identity, both fingerprint sources, draft/search/attachment/recovery state and returns to the URL form. A pending/draft discard requires confirmation. Logout/401 also clear unsaved plaintext editors. The session mode is copied into reactive component state after bootstrap so header actions update correctly.
