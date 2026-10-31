@@ -52,6 +52,8 @@ The opaque format deliberately rejects old plaintext-metadata storage at the sam
 
 The default Docker target and `compose.yaml` run one portable client, with a read-only root filesystem and no database volume. The personal Compose example uses host networking and binds host loopback; on macOS/Windows prefer the native launcher unless Docker host networking is explicitly supported/enabled.
 
+Posts support formatted text, preview, code, quotes, spoilers and emoji insertion. Links and external images require an explicit click. Administrators and moderators can lock threads; the terminal uses `l` on a selected topic. Existing communities can explicitly enable current moderation tools from Account. Edits and removals append signed records; recipients retaining old keys/history can still read earlier versions.
+
 ## Backups, availability and recovery
 
 Account → Add / update a private encrypted backup copies verified history to another backend using independently owned credentials. Save the updated connection file. Copies are point-in-time: updating a primary does not automatically update offline backups. The UI reports whether the **current exact checkpoint** has been copied. Private copies need no administrator registry or approval.

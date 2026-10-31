@@ -285,7 +285,8 @@ async fn interface(client: &mut Client) -> anyhow::Result<()> {
     }
     let _restore = Restore;
     let mut selected = 0usize;
-    let mut status = String::from("↑↓ select · n new · Enter reply · r refresh · q quit");
+    let mut status =
+        String::from("↑↓ select · n new · Enter reply · l lock/unlock · r refresh · q quit");
     let mut draft: Option<Draft> = None;
     let mut export_path: Option<String> = None;
     let mut refreshed = Instant::now();
@@ -309,7 +310,7 @@ async fn interface(client: &mut Client) -> anyhow::Result<()> {
         terminal.draw(|frame| {
             let areas = Layout::default()
                 .direction(Direction::Vertical)
-                .constraints([Constraint::Min(5), Constraint::Length(3)])
+                .constraints([Constraint::Min(5), Constraint::Length(5)])
                 .split(frame.area());
             if let Some(path)=&export_path {
                 frame.render_widget(Paragraph::new(format!("Save {} private encrypted submission(s)\n\n{}▏\n\nChoose a new filename. Existing files are preserved.",client.pending_count(),path)).wrap(Wrap{trim:false}).block(Block::default().borders(Borders::ALL).title("Export pending · Enter save · Esc return")),areas[0]);
@@ -342,7 +343,8 @@ async fn interface(client: &mut Client) -> anyhow::Result<()> {
                             .or_else(|| p["body"].as_str())
                             .unwrap_or("");
                         ListItem::new(format!(
-                            "{}: {}",
+                            "{}{}: {}",
+                            if e.kind=="topic"&&client.data.view().locked_topics.contains(&e.id){"🔒 "}else{""},
                             e.kind,
                             title
                                 .lines()
@@ -626,6 +628,10 @@ async fn interface(client: &mut Client) -> anyhow::Result<()> {
             }
             KeyCode::Down => selected = selected.saturating_add(1),
             KeyCode::Up => selected = selected.saturating_sub(1),
+            KeyCode::Char('l')=>{
+                let topic=match &target{Some((kind,id,_)) if kind=="topic"=>Some(id.clone()),Some((kind,_,parent)) if kind=="reply"=>Some(parent.clone()),_=>None};
+                status=if let Some(topic)=topic{let locked=!client.data.view().locked_topics.contains(&topic);match client.set_thread_lock(&topic,locked).await{Ok(())=>if locked{"Thread locked · moderators may reply or unlock".into()}else{"Thread unlocked".into()},Err(e)=>format!("Thread moderation failed: {e}")}}else{"Select a topic or reply first; l locks/unlocks it for moderators.".into()};
+            },
             KeyCode::Char('r') => {
                 status = match client.refresh().await {
                     Ok(()) => "Synced".into(),
@@ -648,6 +654,10 @@ async fn interface(client: &mut Client) -> anyhow::Result<()> {
                     Some((kind, id, _)) if kind == "board" => ("topic", id),
                     _ => ("board", String::new()),
                 };
+                if let Some(problem)=crate::model::parent_problem(&client.data.events,client.data.view().policy.content_version,kind,&parent){status=format!("{problem}; existing history is read-only");continue;}
+                let role=client.identity.as_ref().and_then(|i|client.data.view().members.get(&i.device.id)).map(|m|m.role.as_str());
+                if kind=="board"&&role!=Some("administrator"){status="Administrator permission is required to create a board.".into();continue;}
+                if kind=="reply"&&client.data.view().locked_topics.contains(&parent)&&!matches!(role,Some("administrator"|"moderator")){status="This thread is locked; ask a moderator to unlock it.".into();continue;}
                 draft = Some(Draft {
                     kind: kind.into(),
                     parent,

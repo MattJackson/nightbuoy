@@ -14,12 +14,18 @@ pub struct Policy {
     pub name: String,
     pub skin: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_version: Option<u8>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub consensus: Option<nightbuoy_proof::Trust>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub portable: Option<crate::portable_protocol::Ordering>,
 }
 impl Policy {
     pub fn validate(&self) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            self.content_version.is_none_or(|v| v == 1),
+            "unsupported content policy version"
+        );
         if let Some(ordering) = &self.portable {
             ordering.validate()?;
             anyhow::ensure!(
@@ -126,6 +132,8 @@ pub struct View {
     pub members: BTreeMap<String, Member>,
     pub grants: BTreeMap<u64, BTreeMap<String, String>>,
     pub publishers: BTreeSet<String>,
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub locked_topics: BTreeSet<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub discovery: Option<crate::portable_protocol::Discovery>,
 }
@@ -147,6 +155,36 @@ pub struct Data {
     pub tip: String,
     pub views: BTreeMap<String, std::sync::Arc<View>>,
     pub events: Vec<Event>,
+}
+/// Versioned content rules apply at the signed checkpoint, preserving older verified records.
+pub fn parent_problem(
+    events: &[Event],
+    version: Option<u8>,
+    kind: &str,
+    parent: &str,
+) -> Option<&'static str> {
+    if version != Some(1) || !matches!(kind, "topic" | "reply") {
+        return None;
+    }
+    let expected = if kind == "topic" { "board" } else { "topic" };
+    let Some(p) = events
+        .iter()
+        .rev()
+        .find(|e| e.id == parent)
+        .filter(|e| e.kind == expected)
+    else {
+        return Some("parent was removed");
+    };
+    if kind == "reply"
+        && !events
+            .iter()
+            .rev()
+            .find(|e| e.id == p.parent)
+            .is_some_and(|e| e.kind == "board")
+    {
+        return Some("parent board was removed");
+    }
+    None
 }
 fn array(body: &str, len: usize) -> anyhow::Result<Vec<Value>> {
     let a: Vec<Value> = serde_json::from_str(body)?;
@@ -261,6 +299,7 @@ impl Data {
             members: BTreeMap::from([(device.id, member)]),
             grants: BTreeMap::new(),
             publishers: BTreeSet::from([publisher]),
+            locked_topics: BTreeSet::new(),
         };
         grants(&mut v, &a[5])?;
         all_current_keys(&v)?;
@@ -384,7 +423,10 @@ impl Data {
             .get(actor)
             .ok_or_else(|| anyhow::anyhow!("unknown administrator"))?;
         anyhow::ensure!(
-            m.status == "active" && (m.role == "administrator" || a[6] == "reconstitute"),
+            m.status == "active"
+                && (m.role == "administrator"
+                    || a[6] == "reconstitute"
+                    || (m.role == "moderator" && a[6] == "thread")),
             "administrator required"
         );
         verify_member(&m.device.sign, &s.body, &s.signature)?;
@@ -429,6 +471,10 @@ impl Data {
                 if v.policy.portable.is_some() {
                     v.policy.identity = "key".into();
                 }
+                if let Some(version) = p.get("content_version") {
+                    anyhow::ensure!(version == 1, "unsupported content policy version");
+                    v.policy.content_version = Some(1);
+                }
                 v.policy.validate()?;
                 let excludes: Vec<String> = serde_json::from_value(p["exclude"].clone())?;
                 anyhow::ensure!(
@@ -459,6 +505,10 @@ impl Data {
                 anyhow::ensure!(
                     policy.consensus == v.policy.consensus && policy.portable == v.policy.portable,
                     "validator trust changes require an explicit branch reset"
+                );
+                anyhow::ensure!(
+                    policy.content_version.unwrap_or(0) >= v.policy.content_version.unwrap_or(0),
+                    "content policy cannot be downgraded on this branch"
                 );
                 v.policy = policy;
             }
@@ -517,6 +567,33 @@ impl Data {
                 advance(&mut v, p)?;
                 grants(&mut v, &p["grants"])?;
                 all_current_keys(&v)?;
+            }
+            "thread" => {
+                anyhow::ensure!(
+                    v.policy.content_version == Some(1),
+                    "an administrator must enable current moderation tools first"
+                );
+                anyhow::ensure!(
+                    p.as_object().is_some_and(|o| o.len() == 2),
+                    "invalid thread control"
+                );
+                let topic = p["topic"].as_str().unwrap_or("");
+                let locked = p["locked"]
+                    .as_bool()
+                    .ok_or_else(|| anyhow::anyhow!("invalid thread lock state"))?;
+                anyhow::ensure!(
+                    self.events
+                        .iter()
+                        .rev()
+                        .find(|e| e.id == topic)
+                        .is_some_and(|e| e.kind == "topic"),
+                    "thread must be an existing live topic"
+                );
+                if locked {
+                    v.locked_topics.insert(topic.into());
+                } else {
+                    v.locked_topics.remove(topic);
+                }
             }
             "publisher" => {
                 let key = p["key"].as_str().unwrap_or("");
@@ -676,6 +753,24 @@ impl Data {
                 );
             }
         }
+        if let Some(problem) =
+            parent_problem(&self.events, v.policy.content_version, &kind, &parent)
+        {
+            anyhow::bail!(problem);
+        }
+        let topic = if kind == "topic" {
+            id.as_str()
+        } else if kind == "reply" {
+            parent.as_str()
+        } else {
+            ""
+        };
+        anyhow::ensure!(
+            kind == "delete"
+                || !v.locked_topics.contains(topic)
+                || matches!(m.role.as_str(), "administrator" | "moderator"),
+            "thread is locked; a moderator must unlock it before members can post or edit"
+        );
         Ok(Event {
             record: r.clone(),
             hash,

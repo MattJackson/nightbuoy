@@ -541,8 +541,15 @@ async fn control(
 ) -> Result<Json<Value>> {
     let next = {
         let s = locked(&app);
-        let id = admin(&s, &h)?;
+        let id = member(&s, &h, true)?;
         let a: Value = serde_json::from_str(&signed.body).map_err(|_| bad("invalid control"))?;
+        let role = &s.data.as_ref().unwrap().view().members[&id].role;
+        if role != "administrator" && !(a[6] == "thread" && role == "moderator") {
+            return Err(Error(
+                StatusCode::FORBIDDEN,
+                "administrator or authorized moderator required".into(),
+            ));
+        }
         if a[4] != id {
             return Err(bad("wrong control author"));
         }

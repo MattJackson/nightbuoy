@@ -1,5 +1,15 @@
 # Independent architecture and code review
 
+## Formatted posts and versioned moderation follow-up
+
+The browser now renders a bounded escaped formatting tree with preview, emoji insertion, safe explicit links and no automatic external media. Unit tests cover hostile markup/URLs, parser budgets, numbered lists and selection boundaries; browser tests inspect both rendered behavior and the original encrypted source. Independent review caught a selection-prefix boundary bug and lost ordered-list starting numbers; both are corrected.
+
+Signed `content_version: 1` enables thread locking and live-parent requirements. Native and browser replay preserve older accepted history, enforce the signed upgrade boundary, reject downgrades, restrict moderators to thread controls and retain ordinary authorized removals. Review caught missing publisher gating and reply/edit actions beneath a removed board; shared ancestor checks now govern both validation and UI. Native tests cover authorization, lock/unlock, history compatibility, removed ancestors and forbidden downgrade.
+
+A browser regression also exposed session bootstrap replacing a busy connected session with an empty session. Bootstrap now waits for the existing session after releasing the registry lock. A focused native test holds the session mutex and verifies no replacement cookie, CSRF value or registry entry is created. Browser suites use separate artifact directories so concurrent validation cannot delete another suite's traces.
+
+Milestone validation passed: 27 Rust tests, strict Clippy, Svelte checks with zero diagnostics, 13 text/protocol/crypto/private tests, six native/provider tests, four portable browser checks and five retained legacy browser checks. The independent reviewer rechecked the removed-parent and busy-bootstrap fixes and found no further concrete correctness or permission issues in these changes. The review was read-only and did not independently rerun runtime tests. Remaining release gates elsewhere in this document still apply.
+
 Date: 2026-10-30. Reviewer: independent read-only review agent, separate from the implementation agent. This is not professional security certification. Findings describe the pre-remediation snapshot; original line references can move as fixes are applied.
 
 ## Initial disposition

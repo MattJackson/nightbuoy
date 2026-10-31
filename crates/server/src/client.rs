@@ -508,20 +508,62 @@ impl Client {
             self.can_write(),
             "posting needs an approved member identity and your own provider write permission"
         );
-        let who = self.identity.clone().unwrap();
+        let item = protocol::Item::Event(Record {
+            event: signed,
+            publisher: self.connection.primary.id()?,
+            receipt: String::new(),
+        });
+        self.append_current_epoch(&item).await?;
+        self.finish_pending();
+        Ok(())
+    }
+    pub async fn set_thread_lock(&mut self, topic: &str, locked: bool) -> anyhow::Result<()> {
+        self.refresh().await?;
+        anyhow::ensure!(
+            self.can_write(),
+            "thread moderation needs your provider write permission and active membership"
+        );
+        let who = self.identity.as_ref().unwrap();
+        anyhow::ensure!(
+            self.data
+                .view()
+                .members
+                .get(&who.device.id)
+                .is_some_and(|m| matches!(m.role.as_str(), "administrator" | "moderator")),
+            "moderator required"
+        );
+        if self.data.view().locked_topics.contains(topic) == locked {
+            anyhow::ensure!(
+                self.data
+                    .events
+                    .iter()
+                    .rev()
+                    .find(|e| e.id == topic)
+                    .is_some_and(|e| e.kind == "topic"),
+                "select an existing live topic"
+            );
+            return Ok(());
+        }
+        let signed=who.signed(&json!(["nightbuoy-control",1,self.data.community(),self.data.authority_tip(),who.device.id,hex::encode(random::<32>()),"thread",{"topic":topic,"locked":locked}]))?;
+        self.append_current_epoch(&protocol::Item::Control(signed))
+            .await
+    }
+    async fn append_current_epoch(&mut self, item: &protocol::Item) -> anyhow::Result<()> {
+        let who = self
+            .identity
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("unlock your identity"))?;
         for attempt in 0..3 {
-            let item = protocol::Item::Event(Record {
-                event: signed.clone(),
-                publisher: self.connection.primary.id()?,
-                receipt: String::new(),
-            });
-            if self.data.archive.order.contains(&signed.hash()) {
-                self.finish_pending();
+            if self.data.archive.order.contains(&item.signed().hash()) {
                 return Ok(());
             }
             let mut candidate = Some(self.data.clone());
             item.apply(&mut candidate)?;
             let mut candidate = candidate.unwrap();
+            anyhow::ensure!(
+                candidate.view().epoch == self.data.view().epoch,
+                "this operation requires the explicit key-rotation flow"
+            );
             let proof = candidate.archive.portable_proof.as_mut().unwrap();
             let sequence = candidate.archive.order.len();
             let previous = proof
@@ -530,7 +572,7 @@ impl Client {
                 .map(protocol::digest)
                 .transpose()?
                 .unwrap_or_default();
-            let body = protocol::header_body(&candidate, &item, &previous, sequence)?;
+            let body = protocol::header_body(&candidate, item, &previous, sequence)?;
             let header = who.signed(&serde_json::from_str(&body)?)?;
             candidate
                 .archive
@@ -545,14 +587,13 @@ impl Client {
                 &self.metadata,
                 &candidate,
                 Some(&self.parent),
-                Some(&item),
+                Some(item),
             )
             .await
             {
                 Ok(()) => {
                     self.data = candidate;
                     self.refresh().await?;
-                    self.finish_pending();
                     return Ok(());
                 }
                 Err(error) => {

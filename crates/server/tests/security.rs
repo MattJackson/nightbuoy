@@ -546,3 +546,280 @@ fn portable_certificates_bind_inventory_and_cannot_downgrade_ordering() {
         .push(data.archive.portable_proof.as_ref().unwrap().headers[0].clone());
     assert!(Data::replay(&bad).is_err());
 }
+
+#[test]
+fn thread_locks_require_moderation_and_bind_posting_permissions_to_history() {
+    let (mut data, owner, owner_dev, publisher) = setup();
+    let mut policy = serde_json::to_value(&data.view().policy).unwrap();
+    policy["content_version"] = json!(1);
+    data.control(ctl(&data, &owner, &owner_dev, "policy", policy))
+        .unwrap();
+    let (moderator, moderator_dev) = device(2);
+    let (member, member_dev) = device(3);
+    for dev in [&moderator_dev, &member_dev] {
+        data.control(ctl(
+            &data,
+            &owner,
+            &owner_dev,
+            "admit",
+            json!({"device":dev,"epoch":1,"grants":grants(&[dev],1)}),
+        ))
+        .unwrap();
+    }
+    data.control(ctl(
+        &data,
+        &owner,
+        &owner_dev,
+        "role",
+        json!({"member":moderator_dev.id,"role":"moderator"}),
+    ))
+    .unwrap();
+    let board = "11111111-1111-4111-8111-111111111111";
+    let topic = "22222222-2222-4222-8222-222222222222";
+    let reply = "33333333-3333-4333-8333-333333333333";
+    data.event(record(
+        &data, &owner, &owner_dev, &publisher, "board", board, "", "",
+    ))
+    .unwrap();
+    data.event(record(
+        &data,
+        &member,
+        &member_dev,
+        &publisher,
+        "topic",
+        topic,
+        board,
+        "",
+    ))
+    .unwrap();
+    let topic_hash = data.events.last().unwrap().hash.clone();
+    data.event(record(
+        &data,
+        &member,
+        &member_dev,
+        &publisher,
+        "reply",
+        reply,
+        topic,
+        "",
+    ))
+    .unwrap();
+    let reply_hash = data.events.last().unwrap().hash.clone();
+    assert!(
+        data.control(ctl(
+            &data,
+            &member,
+            &member_dev,
+            "thread",
+            json!({"topic":topic,"locked":true})
+        ))
+        .is_err()
+    );
+    assert!(
+        data.control(ctl(
+            &data,
+            &moderator,
+            &moderator_dev,
+            "role",
+            json!({"member":moderator_dev.id,"role":"administrator"})
+        ))
+        .is_err()
+    );
+    assert!(
+        data.control(ctl(
+            &data,
+            &moderator,
+            &moderator_dev,
+            "thread",
+            json!({"topic":board,"locked":true})
+        ))
+        .is_err()
+    );
+    data.control(ctl(
+        &data,
+        &moderator,
+        &moderator_dev,
+        "thread",
+        json!({"topic":topic,"locked":true}),
+    ))
+    .unwrap();
+    assert!(data.view().locked_topics.contains(topic));
+    assert!(
+        data.event(record(
+            &data,
+            &member,
+            &member_dev,
+            &publisher,
+            "reply",
+            "44444444-4444-4444-8444-444444444444",
+            topic,
+            ""
+        ))
+        .is_err()
+    );
+    assert!(
+        data.event(record(
+            &data,
+            &member,
+            &member_dev,
+            &publisher,
+            "topic",
+            topic,
+            board,
+            &topic_hash
+        ))
+        .is_err()
+    );
+    // Retraction remains possible, while the signed original stays in the archive.
+    data.event(record(
+        &data,
+        &member,
+        &member_dev,
+        &publisher,
+        "delete",
+        reply,
+        topic,
+        &reply_hash,
+    ))
+    .unwrap();
+    data.event(record(
+        &data,
+        &moderator,
+        &moderator_dev,
+        &publisher,
+        "reply",
+        "55555555-5555-4555-8555-555555555555",
+        topic,
+        "",
+    ))
+    .unwrap();
+    data.control(ctl(
+        &data,
+        &moderator,
+        &moderator_dev,
+        "thread",
+        json!({"topic":topic,"locked":false}),
+    ))
+    .unwrap();
+    data.event(record(
+        &data,
+        &member,
+        &member_dev,
+        &publisher,
+        "reply",
+        "66666666-6666-4666-8666-666666666666",
+        topic,
+        "",
+    ))
+    .unwrap();
+    assert!(!data.view().locked_topics.contains(topic));
+    let replay = Data::replay(&data.archive).unwrap();
+    assert_eq!(replay.tip, data.tip);
+    assert!(!replay.view().locked_topics.contains(topic));
+}
+
+#[test]
+fn content_policy_upgrade_preserves_old_records_and_prevents_new_orphan_posts() {
+    let (mut data, key, dev, publisher) = setup();
+    let board = "11111111-1111-4111-8111-111111111111";
+    let topic = "22222222-2222-4222-8222-222222222222";
+    data.event(record(
+        &data, &key, &dev, &publisher, "board", board, "", "",
+    ))
+    .unwrap();
+    data.event(record(
+        &data, &key, &dev, &publisher, "topic", topic, board, "",
+    ))
+    .unwrap();
+    let original = data.events.last().unwrap().hash.clone();
+    data.event(record(
+        &data, &key, &dev, &publisher, "delete", topic, board, &original,
+    ))
+    .unwrap();
+    // Prior clients accepted this history. An upgrade must not invalidate its signatures/proof.
+    data.event(record(
+        &data,
+        &key,
+        &dev,
+        &publisher,
+        "reply",
+        "33333333-3333-4333-8333-333333333333",
+        topic,
+        "",
+    ))
+    .unwrap();
+    assert!(Data::replay(&data.archive).is_ok());
+    let mut policy = serde_json::to_value(&data.view().policy).unwrap();
+    policy["content_version"] = json!(1);
+    data.control(ctl(&data, &key, &dev, "policy", policy.clone()))
+        .unwrap();
+    assert!(
+        data.event(record(
+            &data,
+            &key,
+            &dev,
+            &publisher,
+            "reply",
+            "44444444-4444-4444-8444-444444444444",
+            topic,
+            ""
+        ))
+        .is_err()
+    );
+    policy.as_object_mut().unwrap().remove("content_version");
+    assert!(
+        data.control(ctl(&data, &key, &dev, "policy", policy))
+            .is_err()
+    );
+    let live_topic = "55555555-5555-4555-8555-555555555555";
+    data.event(record(
+        &data, &key, &dev, &publisher, "topic", live_topic, board, "",
+    ))
+    .unwrap();
+    let board_hash = data
+        .events
+        .iter()
+        .rev()
+        .find(|e| e.id == board)
+        .unwrap()
+        .hash
+        .clone();
+    data.event(record(
+        &data,
+        &key,
+        &dev,
+        &publisher,
+        "delete",
+        board,
+        "",
+        &board_hash,
+    ))
+    .unwrap();
+    assert!(
+        data.event(record(
+            &data,
+            &key,
+            &dev,
+            &publisher,
+            "topic",
+            "66666666-6666-4666-8666-666666666666",
+            board,
+            ""
+        ))
+        .is_err()
+    );
+    assert!(
+        data.event(record(
+            &data,
+            &key,
+            &dev,
+            &publisher,
+            "reply",
+            "77777777-7777-4777-8777-777777777777",
+            live_topic,
+            ""
+        ))
+        .is_err()
+    );
+    assert_eq!(Data::replay(&data.archive).unwrap().tip, data.tip);
+}

@@ -558,10 +558,18 @@ async fn new_session(State(app): State<App>, headers: HeaderMap) -> Response {
         })
     });
     // Reuse the browser's live session; polling/reloading does not allocate more slots.
-    if let Some(key) = crate::api::cookie(&headers, "nb_portable").and_then(|id| map.get(&hash(id)))
-        && let Ok(s) = key.try_lock()
+    if let Some(session) = crate::api::cookie(&headers, "nb_portable")
+        .and_then(|id| map.get(&hash(id)))
+        .cloned()
     {
-        return Json(json!({"mode":"portable","csrf":s.csrf})).into_response();
+        // An in-flight refresh is not a missing session. Release the registry
+        // before waiting so unrelated browsers can still bootstrap.
+        drop(map);
+        let s = session.lock().await;
+        if s.created.elapsed() < Duration::from_secs(8 * 3600) {
+            return Json(json!({"mode":"portable","csrf":s.csrf})).into_response();
+        }
+        return StatusCode::UNAUTHORIZED.into_response();
     }
     let mut admissions = app.admissions.lock().await;
     admissions
@@ -908,6 +916,48 @@ mod tests {
         assert!(!admission_available(&registry, "a1", "B"));
         assert!(admission_available(&registry, "b1", "B"));
         assert!(admission_available(&registry, "new", "A"));
+    }
+    #[tokio::test]
+    async fn busy_session_bootstrap_reuses_existing_connection() {
+        let app = App {
+            sessions: Default::default(),
+            admissions: Default::default(),
+            origin: "http://localhost:8080".into(),
+            web: "/nonexistent".into(),
+            testing: true,
+            allowed: None,
+            branding: None,
+        };
+        let mut headers = HeaderMap::new();
+        headers.insert("x-nightbuoy-bootstrap", "1".parse().unwrap());
+        let initial = new_session(State(app.clone()), headers.clone()).await;
+        let cookie = initial.headers()["set-cookie"]
+            .to_str()
+            .unwrap()
+            .split(';')
+            .next()
+            .unwrap()
+            .to_owned();
+        headers.insert("cookie", cookie.parse().unwrap());
+        let session = app.sessions.lock().await.values().next().unwrap().clone();
+        let guard = session.lock().await;
+        let csrf = guard.csrf.clone();
+        let task = tokio::spawn(new_session(State(app.clone()), headers));
+        tokio::task::yield_now().await;
+        assert!(
+            !task.is_finished(),
+            "bootstrap must wait for the busy session"
+        );
+        assert_eq!(app.sessions.lock().await.len(), 1);
+        drop(guard);
+        let response = task.await.unwrap();
+        assert!(!response.headers().contains_key("set-cookie"));
+        let body = axum::body::to_bytes(response.into_body(), 1024)
+            .await
+            .unwrap();
+        let value: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(value["csrf"], csrf);
+        assert_eq!(app.sessions.lock().await.len(), 1);
     }
     #[tokio::test]
     async fn expired_portable_sessions_return_401_before_body_parsing() {
