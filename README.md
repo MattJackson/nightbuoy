@@ -27,6 +27,8 @@ On another computer, launch NightBuoy, enter the same storage URL, provide provi
 
 `npm run dev:status` reports the launcher. `npm run dev:down` stops it and retains remote history. Pending posts exist only in the tab's memory: export them from Account before closing or signing out. Private `.nbp` exports encrypt routing and metadata as well as content, and require the owning identity to import. The launcher writes only its explicitly chosen development PID/log files under ignored `.dev/`; the companion does not create application state files.
 
+Use **Switch forum** to return to the storage URL form. It drops that session's provider credentials, keys, cache and identity from the client/companion without modifying remote data. Export pending posts first; the interface asks before discarding drafts. Sign-out and authentication expiry also clear unsaved plaintext editor state.
+
 ## Portable executable and read-only media
 
 ```sh

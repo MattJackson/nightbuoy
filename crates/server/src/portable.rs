@@ -56,6 +56,32 @@ struct Session {
     plan: Option<Plan>,
     requests: Vec<Value>,
 }
+impl Session {
+    fn empty(csrf: String, created: Instant, operator_checkpoint: Option<String>) -> Self {
+        Self {
+            csrf,
+            created,
+            operator_checkpoint,
+            connection: None,
+            remote: None,
+            replicas: vec![],
+            from_replica: false,
+            copied_head: None,
+            source_warning: false,
+            data: None,
+            metadata: None,
+            metadata_history: vec![],
+            locked: false,
+            head_grants: Default::default(),
+            head_ephemeral: String::new(),
+            device: None,
+            challenge: None,
+            authenticated: false,
+            plan: None,
+            requests: vec![],
+        }
+    }
+}
 struct Plan {
     ticket: String,
     body: String,
@@ -597,28 +623,11 @@ async fn new_session(State(app): State<App>, headers: HeaderMap) -> Response {
     let csrf = token();
     map.insert(
         hash(&id),
-        Arc::new(Mutex::new(Session {
-            csrf: csrf.clone(),
-            created: Instant::now(),
-            connection: None,
-            remote: None,
-            replicas: vec![],
-            from_replica: false,
-            copied_head: None,
-            source_warning: false,
-            data: None,
-            metadata: None,
-            metadata_history: vec![],
-            locked: false,
-            head_grants: Default::default(),
-            head_ephemeral: String::new(),
-            operator_checkpoint: app.allowed.as_ref().map(|c| c.checkpoint.clone()),
-            device: None,
-            challenge: None,
-            authenticated: false,
-            plan: None,
-            requests: vec![],
-        })),
+        Arc::new(Mutex::new(Session::empty(
+            csrf.clone(),
+            Instant::now(),
+            app.allowed.as_ref().map(|c| c.checkpoint.clone()),
+        ))),
     );
     let mut r = Json(json!({"mode":"portable","csrf":csrf})).into_response();
     r.headers_mut().insert(
@@ -673,6 +682,7 @@ async fn endpoint(
    if s.active().is_ok(){let identity=format!("{}:{}",s.data.as_ref().unwrap().community(),s.device.as_ref().unwrap().id);let mut admissions=app.admissions.lock().await;admissions.retain(|_,(_,t)|t.elapsed()<Duration::from_secs(8*3600));let session_key=hash(&key);if !admission_available(&admissions,&session_key,&identity){s.authenticated=false;anyhow::bail!("this member already has two active sessions; sign out another tab first");}admissions.insert(session_key,(identity,Instant::now()));}
    json!({"ok":true})},
   "logout"=>{app.admissions.lock().await.remove(&hash(&key));s.authenticated=false;s.device=None;s.challenge=None;s.plan=None;s.metadata=None;s.metadata_history.clear();s.data=None;s.head_grants.clear();s.locked=true;json!({"ok":true})},
+  "disconnect"=>{app.admissions.lock().await.remove(&hash(&key));*s=Session::empty(s.csrf.clone(),s.created,s.operator_checkpoint.clone());json!({"ok":true})},
   "me"=>{anyhow::ensure!(s.authenticated,"sign in required");s.refresh().await?;json!({"member":s.data.as_ref().and_then(|d|d.view().members.get(&s.device.as_ref().unwrap().id)),"read_access":s.metadata.is_some()&&s.data.is_some()})},
   "sync"=>{s.refresh().await?;anyhow::ensure!(s.authenticated&&s.metadata.is_some()&&s.data.is_some(),"sign in and unlock forum access required");serde_json::to_value(&s.data.as_ref().unwrap().archive).map_err(anyhow::Error::from)?},
   "join"=>{anyhow::ensure!(s.authenticated,"sign in required");let signed:Signed=serde_json::from_value(v["signed"].clone())?;let device=s.device.as_ref().unwrap();let expected=if let Some(data)=&s.data{json!(["nightbuoy-join",1,data.community(),device])}else{json!(["nightbuoy-join",2,s.connection.as_ref().unwrap().primary.id()?,device])};anyhow::ensure!(signed.body==serde_json::to_string(&expected)?,"invalid membership request");verify_member(&device.sign,&signed.body,&signed.signature)?;json!({"request":{"device":device,"signed":signed},"export_required":true})},

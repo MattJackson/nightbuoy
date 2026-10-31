@@ -1,5 +1,11 @@
 # Independent architecture and code review
 
+## Session switching and editor cleanup follow-up
+
+Explicit Switch forum resets the companion to an empty session while preserving its original expiry, CSRF token and operator pin. It drops remote transports/credentials, cached history, metadata keys, discovery, authentication, admissions and prepared writes. Hosted destination restrictions remain on the application. The browser clears identity, both fingerprint sources, draft/search/attachment/recovery state and returns to the URL form. A pending/draft discard requires confirmation. Logout/401 also clear unsaved plaintext editors. The session mode is copied into reactive component state after bootstrap so header actions update correctly.
+
+Validation passed three portable session tests, four portable browser checks, a further switch with a stale URL fingerprint and an unaffiliated recovery identity, five legacy browser checks (including 401 draft clearing), all-feature Clippy and zero-diagnostic Svelte checks. Independent review identified the retained URL fingerprint; clearing it and the restore fingerprint input resolves that finding. No forensic erasure claim is made.
+
 ## Native package rehearsal follow-up
 
 The first native matrix builds x86-64/ARM64 Linux, macOS and Windows, with embedded web assets from the same workflow run. Package manifests enumerate only outputs created in that invocation, preventing stale packages from being labeled with a newer commit. The verifier checks checksums and expected application versions and executes packaged binaries against embedded UI assets and the ephemeral API. Linux DEB/RPM/pacman payloads are extracted rather than system-installed; RPM stripping is disabled to preserve the tested binary identity. macOS ZIP, PKG payload and mounted read-only DMG are inspected and executed. Windows installer rehearsal uses a random, separate Inno application registration and suppresses shortcuts, then uninstalls that registration.
