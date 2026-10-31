@@ -25,7 +25,7 @@ Enter a GitHub/Forgejo repository URL or an S3-compatible root, optionally enter
 
 On another computer, launch NightBuoy, enter the same storage URL, provide provider access if required, then import and unlock your encrypted identity. An authorized identity discovers its forum key without a connection file. A private `nb2:` access key permits current-epoch reading and pins the forum/branch; it does not grant membership or provider write permission. Provider permission and forum membership are separate. Never share an owner's unrestricted token with members. Provider credentials stay in companion memory and must be entered again after restarting; private profile/kit credential persistence is not implemented.
 
-`npm run dev:status` reports the launcher. `npm run dev:down` stops it and retains remote history. Pending posts exist only in the tab's memory: export them from Account before closing or signing out. The launcher writes only its explicitly chosen development PID/log files under ignored `.dev/`; the companion does not create application state files.
+`npm run dev:status` reports the launcher. `npm run dev:down` stops it and retains remote history. Pending posts exist only in the tab's memory: export them from Account before closing or signing out. Private `.nbp` exports encrypt routing and metadata as well as content, and require the owning identity to import. The launcher writes only its explicitly chosen development PID/log files under ignored `.dev/`; the companion does not create application state files.
 
 ## Portable executable and read-only media
 
@@ -42,10 +42,11 @@ Running the executable without a command opens the local graphical interface in 
 ```sh
 nightbuoy cli -f https://github.com/owner/repository --prompt-key
 nightbuoy cli -f https://forge.example/owner/repository -i recovery.json --provider-token-file token.txt
+nightbuoy identity create recovery.json
 nightbuoy cli --help
 ```
 
-`-k KEY` is also supported, but exposes the key in process arguments; prefer hidden prompting or `--key-file`. Identity passphrases are prompted with hidden input. For S3 use `--provider-credentials-file` with a private JSON file containing `access_key` and `secret_key`. The terminal supports selection, reading, new boards/topics/replies, refresh and retained pending retries. After an unconfirmed submission, Ctrl+D twice in its draft consults verified history and permits explicit review/resubmission using the same object ID. Native encrypted pending export/import and identity creation remain in development. `--print` explicitly emits decrypted content to standard output.
+`-k KEY` is also supported, but exposes the key in process arguments; prefer hidden prompting or `--key-file`. Identity passphrases are prompted with hidden input. For S3 use `--provider-credentials-file` with a private JSON file containing `access_key` and `secret_key`. The terminal supports selection, reading, new boards/topics/replies, refresh and retained pending retries. After an unconfirmed submission, Ctrl+D twice in its draft consults verified history and permits explicit review/resubmission using the same object ID. Use `e` (or Ctrl+E while drafting) to save private pending submissions; `--pending-file` imports them with the owning identity. `p` retries, `v` reviews and `d` explicitly discards a saved pending copy. Queues are limited to 100 unique submissions and 16 MiB. `identity create NEW_FILE` creates a recovery file; `--export-identity NEW_FILE` saves an updated encrypted checkpoint after the terminal closes. Exports preserve existing files. `--print` explicitly emits decrypted content to standard output.
 
 The opaque format deliberately rejects old plaintext-metadata storage at the same location. Use an explicitly selected new directory and preserved-history migration; it cannot make earlier Git commits secret retroactively. Existing user data is never silently rewritten.
 

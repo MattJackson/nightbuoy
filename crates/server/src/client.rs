@@ -10,7 +10,7 @@ use crate::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AccessKey {
@@ -51,7 +51,28 @@ impl AccessKey {
 struct Pending {
     intent: String,
     signed: Signed,
+    wrapped_key: String,
 }
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PendingPacket {
+    hash: String,
+    owner: String,
+    community: String,
+    event: Signed,
+    #[serde(rename = "wrappedKey")]
+    wrapped_key: String,
+    created: u64,
+}
+pub struct PendingDraft {
+    pub kind: String,
+    pub id: String,
+    pub parent: String,
+    pub previous: String,
+    pub payload: Value,
+}
+pub const MAX_PENDING_ITEMS: usize = 100;
+pub const MAX_PENDING_BYTES: usize = 16 * 1024 * 1024;
 pub struct Client {
     pub connection: Connection,
     pub remote: Remote,
@@ -64,6 +85,7 @@ pub struct Client {
     parent: Blob,
     pin: Option<AccessKey>,
     pending: Option<Pending>,
+    pending_queue: VecDeque<Pending>,
 }
 impl Drop for Client {
     fn drop(&mut self) {
@@ -161,6 +183,7 @@ impl Client {
             parent,
             pin: access,
             pending: None,
+            pending_queue: VecDeque::new(),
         };
         client.decrypt_contents()?;
         Ok(client)
@@ -295,9 +318,160 @@ impl Client {
                 crate::store::now() * 1000
             ]);
             let signed = client_crypto::encrypt_event(who, &self.current, fields, &payload)?;
-            self.pending = Some(Pending { intent, signed });
+            anyhow::ensure!(
+                signed.body.len() <= 8_000_000,
+                "pending ciphertext is too large"
+            );
+            let mut candidate = VecDeque::from([Pending {
+                intent,
+                signed,
+                wrapped_key: client_crypto::wrap_epoch(&who.device, &self.current)?,
+            }]);
+            anyhow::ensure!(
+                serde_json::to_vec(&self.pending_packets(&candidate)?)?.len() <= MAX_PENDING_BYTES,
+                "pending submission exceeds the private export budget"
+            );
+            self.pending = candidate.pop_front();
         }
         self.retry_pending().await
+    }
+    fn finish_pending(&mut self) {
+        self.pending = self.pending_queue.pop_front();
+    }
+    pub fn pending_count(&self) -> usize {
+        usize::from(self.pending.is_some()) + self.pending_queue.len()
+    }
+    fn pending_packets(&self, extra: &VecDeque<Pending>) -> anyhow::Result<Vec<PendingPacket>> {
+        let who = self
+            .identity
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("unlock your identity to export private submissions"))?;
+        self.pending
+            .iter()
+            .chain(self.pending_queue.iter())
+            .chain(extra.iter())
+            .map(|p| {
+                let fields: Value = serde_json::from_str(&p.signed.body)?;
+                Ok(PendingPacket {
+                    hash: p.signed.hash(),
+                    owner: who.device.id.clone(),
+                    community: self.data.community(),
+                    event: p.signed.clone(),
+                    wrapped_key: p.wrapped_key.clone(),
+                    created: fields[9].as_u64().unwrap_or(0),
+                })
+            })
+            .collect()
+    }
+    pub fn export_pending(&self) -> anyhow::Result<Vec<u8>> {
+        let who = self
+            .identity
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("unlock your identity to export private submissions"))?;
+        let packets = self.pending_packets(&VecDeque::new())?;
+        anyhow::ensure!(!packets.is_empty(), "No pending submissions");
+        who.seal_private(&self.data.community(), "pending", &packets)
+    }
+    pub fn import_pending(&mut self, frame: &[u8]) -> anyhow::Result<usize> {
+        let who = self.identity.as_ref().ok_or_else(|| {
+            anyhow::anyhow!("unlock the owning identity to import private submissions")
+        })?;
+        let packets: Vec<PendingPacket> =
+            who.open_private(&self.data.community(), "pending", frame)?;
+        anyhow::ensure!(
+            packets.len() <= MAX_PENDING_ITEMS,
+            "pending submission limit exceeded"
+        );
+        let mut imported = VecDeque::new();
+        let mut hashes = std::collections::BTreeSet::new();
+        for packet in packets {
+            anyhow::ensure!(
+                packet.event.body.len() <= 8_000_000 && packet.wrapped_key.len() == 512,
+                "invalid pending ciphertext size"
+            );
+            anyhow::ensure!(
+                packet.created > 0 && packet.created <= 253_402_300_799_999,
+                "invalid pending timestamp"
+            );
+            anyhow::ensure!(
+                packet.owner == who.device.id
+                    && packet.community == self.data.community()
+                    && packet.hash == packet.event.hash(),
+                "private submission identity mismatch"
+            );
+            verify_member(
+                &who.device.sign,
+                &packet.event.body,
+                &packet.event.signature,
+            )?;
+            let fields: Vec<Value> = serde_json::from_str(&packet.event.body)?;
+            anyhow::ensure!(
+                fields.len() == 12
+                    && fields[0] == 1
+                    && fields[1] == self.data.community()
+                    && fields[2] == who.device.id,
+                "invalid private submission context"
+            );
+            let mut key = who.open_epoch(&packet.wrapped_key)?;
+            let payload = client_crypto::decrypt_event(&key, &packet.event);
+            key.fill(0);
+            let payload = payload?;
+            let kind = fields[5].as_str().unwrap_or("");
+            anyhow::ensure!(
+                valid_content(kind, &payload),
+                "invalid private submission content"
+            );
+            if self.data.archive.order.contains(&packet.hash)
+                || !hashes.insert(packet.hash.clone())
+                || self
+                    .pending
+                    .iter()
+                    .chain(self.pending_queue.iter())
+                    .any(|p| p.signed.hash() == packet.hash)
+            {
+                continue;
+            }
+            let intent = protocol::digest(&json!([kind, fields[7], payload, fields[8]]))?;
+            imported.push_back(Pending {
+                intent,
+                signed: packet.event,
+                wrapped_key: packet.wrapped_key,
+            });
+        }
+        let count = imported.len();
+        let combined = self.pending_packets(&imported)?;
+        anyhow::ensure!(
+            combined.len() <= MAX_PENDING_ITEMS
+                && serde_json::to_vec(&combined)?.len() <= MAX_PENDING_BYTES,
+            "pending submissions are limited to 100 items and 16 MiB; export, retry or discard saved submissions first"
+        );
+        self.pending_queue.extend(imported);
+        if self.pending.is_none() {
+            self.finish_pending();
+        }
+        Ok(count)
+    }
+    pub fn pending_draft(&self) -> anyhow::Result<PendingDraft> {
+        let pending = self
+            .pending
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("No pending submission"))?;
+        let who = self
+            .identity
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("unlock the owning identity"))?;
+        let mut key = who.open_epoch(&pending.wrapped_key)?;
+        let payload = client_crypto::decrypt_event(&key, &pending.signed);
+        key.fill(0);
+        let payload = payload?;
+        let fields: Value = serde_json::from_str(&pending.signed.body)?;
+        Ok(PendingDraft {
+            kind: fields[5].as_str().unwrap_or("").into(),
+            id: fields[6].as_str().unwrap_or("").into(),
+            parent: fields[7].as_str().unwrap_or("").into(),
+            previous: fields[8].as_str().unwrap_or("").into(),
+            payload,
+        })
     }
     pub fn pending_id(&self) -> Option<String> {
         self.pending
@@ -312,7 +486,7 @@ impl Client {
             .pending
             .as_ref()
             .is_some_and(|p| self.data.archive.order.contains(&p.signed.hash()));
-        self.pending = None;
+        self.finish_pending();
         Ok(accepted)
     }
     pub fn has_pending(&self) -> bool {
@@ -327,7 +501,7 @@ impl Client {
             .clone();
         self.refresh().await?;
         if self.data.archive.order.contains(&signed.hash()) {
-            self.pending = None;
+            self.finish_pending();
             return Ok(());
         }
         anyhow::ensure!(
@@ -342,7 +516,7 @@ impl Client {
                 receipt: String::new(),
             });
             if self.data.archive.order.contains(&signed.hash()) {
-                self.pending = None;
+                self.finish_pending();
                 return Ok(());
             }
             let mut candidate = Some(self.data.clone());
@@ -378,7 +552,7 @@ impl Client {
                 Ok(()) => {
                     self.data = candidate;
                     self.refresh().await?;
-                    self.pending = None;
+                    self.finish_pending();
                     return Ok(());
                 }
                 Err(error) => {
@@ -672,6 +846,7 @@ mod tests {
             },
             pin: None,
             pending: None,
+            pending_queue: VecDeque::new(),
         };
         let old_community = client.data.community();
         assert!(client.refresh().await.is_err());
@@ -773,6 +948,53 @@ mod tests {
         let rebased: Value =
             serde_json::from_str(&client.pending.as_ref().unwrap().signed.body).unwrap();
         assert_eq!(rebased[3], updated.authority_tip());
+        let exported = client.export_pending().unwrap();
+        let packets: Vec<Value> = who
+            .open_private(&client.data.community(), "pending", &exported)
+            .unwrap();
+        assert_eq!(packets.len(), 1);
+        assert_eq!(
+            packets[0]["hash"],
+            client.pending.as_ref().unwrap().signed.hash()
+        );
+        client.discard_pending().await.unwrap();
+        let mut packets = vec![];
+        let wrapped = client_crypto::wrap_epoch(&who.device, &client.current).unwrap();
+        for _ in 0..60 {
+            let event = client_crypto::encrypt_event(
+                &who,
+                &client.current,
+                json!([
+                    1,
+                    client.data.community(),
+                    who.device.id,
+                    client.data.authority_tip(),
+                    client.data.view().epoch,
+                    "board",
+                    object_id(),
+                    "",
+                    "",
+                    1
+                ]),
+                &json!({"title":"Queued board"}),
+            )
+            .unwrap();
+            packets.push(json!({"hash":event.hash(),"owner":who.device.id,"community":client.data.community(),"event":event,"wrappedKey":wrapped,"created":1}));
+        }
+        let batch = who
+            .seal_private(&client.data.community(), "pending", &packets)
+            .unwrap();
+        assert_eq!(client.import_pending(&batch).unwrap(), 60);
+        assert_eq!(client.pending_count(), 60);
+        assert_eq!(client.import_pending(&batch).unwrap(), 0);
+        assert_eq!(client.pending_count(), 60);
+        let mut invalid = packets.clone();
+        invalid[1]["owner"] = json!("another identity");
+        let invalid = who
+            .seal_private(&client.data.community(), "pending", &invalid)
+            .unwrap();
+        assert!(client.import_pending(&invalid).is_err());
+        assert_eq!(client.pending_count(), 60);
         server.abort();
     }
 }

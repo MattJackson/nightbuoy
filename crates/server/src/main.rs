@@ -3,6 +3,12 @@ use std::sync::{Arc, Mutex};
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     match std::env::args().nth(1).as_deref() {
+        Some("identity") => {
+            return nightbuoy::terminal::identity_command(
+                &std::env::args().skip(2).collect::<Vec<_>>(),
+            )
+            .await;
+        }
         Some("--help" | "-h") => return nightbuoy::terminal::run(&["--help".into()]).await,
         Some("--version" | "-V") => {
             println!("NightBuoy {}", env!("CARGO_PKG_VERSION"));

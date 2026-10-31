@@ -8,7 +8,7 @@
     "build": "npm run build:proof && vite build --config web/vite.config.ts",
     "check": "npm run build:proof && svelte-check --tsconfig web/tsconfig.json",
     "test": "playwright test",
-    "test:crypto": "node --experimental-strip-types --test tests/crypto.test.ts",
+    "test:crypto": "node --experimental-strip-types --test tests/crypto.test.ts tests/private.test.ts",
     "build:proof": "node scripts/build-proof.mjs",
     "dev:up": "node scripts/portable-dev.mjs up",
     "dev:down": "node scripts/portable-dev.mjs down",
@@ -23,7 +23,7 @@
     "dev:legacy:up": "node scripts/compose.mjs up -d --build",
     "dev:legacy:down": "node scripts/compose.mjs down",
     "dev:legacy:status": "node scripts/compose.mjs ps",
-    "test:portable": "cargo build --locked && node --experimental-strip-types --test tests/portable.test.ts",
+    "test:portable": "cargo build --locked && node --experimental-strip-types --test tests/portable.test.ts tests/native-identity.test.ts",
     "test:portable:browser": "playwright test --config playwright.portable.config.ts"
   },
   "dependencies": {
