@@ -3,6 +3,7 @@
 #endif
 [Setup]
 AppId={param:NightBuoyInstallId|NightBuoy}
+UsePreviousLanguage=no
 AppName=NightBuoy
 AppVersion={#Version}
 DefaultDirName={localappdata}\Programs\NightBuoy

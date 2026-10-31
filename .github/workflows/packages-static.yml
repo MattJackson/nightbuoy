@@ -38,6 +38,11 @@ jobs:
         with:
           toolchain: 1.98.1
           targets: wasm32-unknown-unknown,${{ matrix.target }}
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        with:
+          shared-key: static-${{ matrix.target }}
+          cache-on-failure: true
+          cache-directories: .tools
       - run: npm ci && npm run build
       - name: Static build tools
         run: sudo apt-get update && sudo apt-get install -y musl-tools cmake nasm qemu-user-static
