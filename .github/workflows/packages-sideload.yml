@@ -30,7 +30,7 @@ jobs:
         run: |
           set -euo pipefail
           sudo apt-get update
-          sudo apt-get install -y flatpak squashfs-tools desktop-file-utils snapd dbus-x11
+          sudo apt-get install -y flatpak squashfs-tools desktop-file-utils snapd dbus-x11 librsvg2-bin
           sudo systemctl start snapd.socket
           sudo snap wait system seed.loaded
           sudo snap install core24

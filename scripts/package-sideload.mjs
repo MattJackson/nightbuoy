@@ -80,6 +80,8 @@ try{
  const appdir=join(temp,'NightBuoy.AppDir');await mkdir(appdir);await cp(binary,join(appdir,'nightbuoy'));await chmod(join(appdir,'nightbuoy'),0o755);
  await put(join(appdir,'AppRun'),'#!/bin/sh\nexec "$(dirname "$(readlink -f "$0")")/nightbuoy" "$@"\n',0o755);
  await cp('packaging/nightbuoy.desktop',join(appdir,'nightbuoy.desktop'));await cp('web/public/nightbuoy.svg',join(appdir,'nightbuoy.svg'));
+ run('rsvg-convert',['--width=256','--height=256','--output='+join(appdir,'nightbuoy.png'),'web/public/nightbuoy.svg']);
+ await cp(join(appdir,'nightbuoy.png'),join(appdir,'.DirIcon'));
  for(const file of ['LICENSE','THIRD_PARTY_NOTICES.md','README.md'])await cp(join(payload,file),join(appdir,file));
  await download('https://raw.githubusercontent.com/AppImage/type2-runtime/fedfad51acc2860b2916a1eef32ba4a500ff31ef/LICENSE',join(appdir,'APPIMAGE_RUNTIME_LICENSE'),'aa154fc9070614bbe7921f89db11efd1dba7a1f3a41685958110e2230f9c0ca1');
  const tool=join(temp,'appimagetool'),runtime=join(temp,'runtime');
