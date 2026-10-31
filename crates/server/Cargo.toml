@@ -19,7 +19,7 @@ rusqlite = { version = "0.41.1", features = ["bundled"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "socks"] }
 aes-gcm = "0.11.1"
 sha2 = "0.10"
-hmac = "0.12"
+hmac = "0.13"
 base64 = "0.22"
 hex = "0.4"
 rand = "0.8"
