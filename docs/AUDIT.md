@@ -1,5 +1,11 @@
 # Independent architecture and code review
 
+## Native package rehearsal follow-up
+
+The first native matrix builds x86-64/ARM64 Linux, macOS and Windows, with embedded web assets from the same workflow run. Package manifests enumerate only outputs created in that invocation, preventing stale packages from being labeled with a newer commit. The verifier checks checksums and expected application versions and executes packaged binaries against embedded UI assets and the ephemeral API. Linux DEB/RPM/pacman payloads are extracted rather than system-installed; RPM stripping is disabled to preserve the tested binary identity. macOS ZIP, PKG payload and mounted read-only DMG are inspected and executed. Windows installer rehearsal uses a random, separate Inno application registration and suppresses shortcuts, then uninstalls that registration.
+
+Independent static review identified and prompted fixes for shared Windows uninstall registration/shortcuts, stale artifact inclusion and RPM stripping. Local Apple Silicon release build, package creation, all macOS payload round-trips and the stale-output regression pass. All-feature Clippy and workflow actionlint pass. Native CI results and further formats are pending; unsigned/ad-hoc packages do not establish trusted distribution or notarization.
+
 ## Formatted posts and versioned moderation follow-up
 
 The browser now renders a bounded escaped formatting tree with preview, emoji insertion, safe explicit links and no automatic external media. Unit tests cover hostile markup/URLs, parser budgets, numbered lists and selection boundaries; browser tests inspect both rendered behavior and the original encrypted source. Independent review caught a selection-prefix boundary bug and lost ordered-list starting numbers; both are corrected.

@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=NightBuoy
+Comment=Portable encrypted conversations
+Exec=nightbuoy gui
+Icon=nightbuoy
+Terminal=false
+Categories=Network;
+StartupNotify=false

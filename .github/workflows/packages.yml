@@ -1,0 +1,140 @@
+name: Package rehearsal
+on:
+  workflow_dispatch:
+  push:
+    branches: [dev]
+    paths:
+      - 'crates/**'
+      - 'Cargo.*'
+      - 'web/**'
+      - 'packaging/**'
+      - 'scripts/*proof*'
+      - 'scripts/*package*'
+      - 'scripts/smoke-runtime.mjs'
+      - 'package*.json'
+      - '.github/workflows/packages.yml'
+permissions:
+  contents: read
+concurrency:
+  group: packages-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  web:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: 26.13.0
+          cache: npm
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec
+        with:
+          toolchain: 1.98.1
+          targets: wasm32-unknown-unknown
+      - run: npm ci
+      - run: npm run build
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: embedded-web
+          path: web/dist/
+          if-no-files-found: error
+          retention-days: 14
+  native:
+    needs: web
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {runner: ubuntu-24.04, target: x86_64-unknown-linux-gnu}
+          - {runner: ubuntu-24.04-arm, target: aarch64-unknown-linux-gnu}
+          - {runner: macos-15, target: aarch64-apple-darwin}
+          - {runner: macos-15-intel, target: x86_64-apple-darwin}
+          - {runner: windows-2025, target: x86_64-pc-windows-msvc}
+          - {runner: windows-11-arm, target: aarch64-pc-windows-msvc}
+    runs-on: ${{ matrix.runner }}
+    defaults:
+      run:
+        shell: bash
+    env:
+      CARGO_BUILD_JOBS: 3
+      MACOSX_DEPLOYMENT_TARGET: '12.0'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          name: embedded-web
+          path: web/dist/
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: 26.13.0
+      - name: Linux package and native build tools
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y cmake clang nasm rpm zstd libarchive-tools desktop-file-utils
+      - name: Windows native build tools
+        if: runner.os == 'Windows'
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          if [[ "$TARGET" == aarch64-* ]] && ! command -v rustup >/dev/null 2>&1; then
+            curl -fsSLo "$RUNNER_TEMP/rustup-init.exe" https://static.rust-lang.org/rustup/archive/1.29.1/aarch64-pc-windows-msvc/rustup-init.exe
+            echo "01aa49cf9574a8bd0ae52005d7de2590e8f27181ded6748236e702c92aef826d  $RUNNER_TEMP/rustup-init.exe" | sha256sum -c -
+            "$RUNNER_TEMP/rustup-init.exe" -y --profile minimal --default-toolchain none --no-modify-path
+            cygpath -w "$USERPROFILE/.cargo/bin" >> "$GITHUB_PATH"
+          fi
+          if [[ "$TARGET" == aarch64-* ]]; then
+            vs=$("/c/Program Files (x86)/Microsoft Visual Studio/Installer/vswhere.exe" -latest -products '*' -property installationPath | tr -d '\r')
+            for d in "/c/Program Files/LLVM/bin" "$(cygpath -u "$vs")/VC/Tools/Llvm/ARM64/bin"; do
+              if [ -x "$d/clang.exe" ]; then cygpath -w "$d" >> "$GITHUB_PATH"; break; fi
+            done
+          else
+            choco install nasm --yes --no-progress
+            echo 'C:\Program Files\NASM' >> "$GITHUB_PATH"
+          fi
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec
+        with:
+          toolchain: 1.98.1
+          targets: ${{ matrix.target }}
+      - name: Build embedded native executable and desktop launcher
+        run: cargo build --release --locked --target '${{ matrix.target }}' --features desktop-launcher
+      - name: Prepare native archives and installers
+        if: runner.os != 'Windows'
+        run: node scripts/package-native.mjs '${{ matrix.target }}'
+      - name: Windows installer compiler and packages
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) {
+            $setup = "$env:RUNNER_TEMP\nightbuoy-innosetup-6.4.3.exe"
+            Invoke-WebRequest -Uri https://github.com/jrsoftware/issrc/releases/download/is-6_4_3/innosetup-6.4.3.exe -OutFile $setup
+            if ((Get-FileHash -Algorithm SHA256 $setup).Hash -ne 'F3C42116542C4CC57263C5BA6C4FEABFC49FE771F2F98A79D2F7628B8762723B') { throw 'Installer compiler checksum mismatch' }
+            $p = Start-Process -FilePath $setup -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/ALLUSERS' -Wait -PassThru
+            if ($p.ExitCode -ne 0) { throw 'Installer compiler setup failed' }
+          }
+          node scripts/package-native.mjs '${{ matrix.target }}'
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Extract/install packages and execute their embedded application
+        run: node scripts/verify-packages.mjs '${{ matrix.target }}'
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: nightbuoy-${{ matrix.target }}
+          path: |
+            dist/${{ matrix.target }}/*.zip
+            dist/${{ matrix.target }}/*.tar.gz
+            dist/${{ matrix.target }}/*.pkg
+            dist/${{ matrix.target }}/*.dmg
+            dist/${{ matrix.target }}/*.exe
+            dist/${{ matrix.target }}/*.deb
+            dist/${{ matrix.target }}/*.rpm
+            dist/${{ matrix.target }}/*.pkg.tar.zst
+            dist/${{ matrix.target }}/SHA256SUMS
+            dist/${{ matrix.target }}/build.json
+          if-no-files-found: error
+          retention-days: 14
