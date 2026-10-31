@@ -29,6 +29,8 @@ struct Options {
     print: bool,
     pending_file: Option<PathBuf>,
     export_identity: Option<PathBuf>,
+    reading_file: Option<PathBuf>,
+    export_reading: Option<PathBuf>,
 }
 fn parse(args: &[String]) -> anyhow::Result<Option<Options>> {
     let mut o = Options::default();
@@ -65,6 +67,8 @@ fn parse(args: &[String]) -> anyhow::Result<Option<Options>> {
             "--key-file" => o.key_file = Some(value.into()),
             "--pending-file" => o.pending_file = Some(value.into()),
             "--export-identity" => o.export_identity = Some(value.into()),
+            "--reading-state-file" => o.reading_file = Some(value.into()),
+            "--export-reading-state" => o.export_reading = Some(value.into()),
             "-i" | "--identity" => o.identity = Some(value.into()),
             "--provider-token-file" => o.token_file = Some(value.into()),
             "--provider-credentials-file" => o.credentials_file = Some(value.into()),
@@ -151,7 +155,7 @@ pub async fn identity_command(args: &[String]) -> anyhow::Result<()> {
 pub async fn run(args: &[String]) -> anyhow::Result<()> {
     let Some(o) = parse(args)? else {
         println!(
-            "NightBuoy\n\nnightbuoy                         Open the graphical interface\nnightbuoy portable                Run the companion without opening a browser\nnightbuoy cli -f ROOT [OPTIONS]    Open the terminal interface\nnightbuoy identity create FILE    Create an encrypted portable identity\n\n-k, --key KEY            Private nb2 access key (visible in process arguments)\n-k, --prompt-key         Read the access key with hidden input\n--key-file FILE          Read the access key from a private file\n-i, --identity FILE      Encrypted identity recovery file; passphrase prompted\n--provider-token-file FILE  Your own scoped repository token\n--provider-credentials-file FILE  Private JSON: token or access_key + secret_key\n--pending-file FILE      Import private encrypted unconfirmed submissions\n--export-identity FILE   Save an updated encrypted identity checkpoint on exit\n--print                  Print verified decrypted content instead of the TUI\n\nAn access key permits reading. Posting also needs an approved identity and provider permission.\nNo credentials or decrypted cache are saved by the terminal client."
+            "NightBuoy\n\nnightbuoy                         Open the graphical interface\nnightbuoy portable                Run the companion without opening a browser\nnightbuoy cli -f ROOT [OPTIONS]    Open the terminal interface\nnightbuoy identity create FILE    Create an encrypted portable identity\n\n-k, --key KEY            Private nb2 access key (visible in process arguments)\n-k, --prompt-key         Read the access key with hidden input\n--key-file FILE          Read the access key from a private file\n-i, --identity FILE      Encrypted identity recovery file; passphrase prompted\n--provider-token-file FILE  Your own scoped repository token\n--provider-credentials-file FILE  Private JSON: token or access_key + secret_key\n--pending-file FILE      Import private encrypted unconfirmed submissions\n--export-identity FILE   Save an updated encrypted identity checkpoint on exit\n--reading-state-file FILE  Import an owner-private reading-state backup\n--export-reading-state FILE  Save a private reading-state backup on exit\n--print                  Print verified decrypted content instead of the TUI\n\nAn access key permits reading. Posting also needs an approved identity and provider permission.\nNo credentials or decrypted cache are saved by the terminal client."
         );
         return Ok(());
     };
@@ -228,6 +232,14 @@ pub async fn run(args: &[String]) -> anyhow::Result<()> {
             client.import_pending(&bytes)?
         );
     }
+    if let Some(path) = o.reading_file {
+        use std::io::Read;
+        let mut bytes = vec![];
+        std::fs::File::open(path)?
+            .take((crate::private_objects::MAX_PRIVATE_OBJECT + 1) as u64)
+            .read_to_end(&mut bytes)?;
+        client.import_reading(&bytes)?;
+    }
     if o.print {
         for e in client.objects() {
             println!(
@@ -240,7 +252,17 @@ pub async fn run(args: &[String]) -> anyhow::Result<()> {
             io::stdin().is_terminal() && io::stdout().is_terminal(),
             "interactive CLI needs a terminal; use --print for explicit plaintext output"
         );
+        if client.reading.state.is_some()
+            && client.can_write()
+            && let Err(e) = client.save_reading().await
+        {
+            client.reading.warning = e.to_string();
+        }
         interface(&mut client).await?;
+    }
+    if let Some(path) = o.export_reading {
+        crate::client_crypto::write_private_file(&path, &client.export_reading()?)?;
+        eprintln!("Private reading-state backup saved.");
     }
     if let Some(path) = o.export_identity {
         let identity = client.identity.as_ref().ok_or_else(|| {
@@ -285,10 +307,18 @@ async fn interface(client: &mut Client) -> anyhow::Result<()> {
     }
     let _restore = Restore;
     let mut selected = 0usize;
-    let mut status =
-        String::from("↑↓ select · n new · Enter reply · l lock/unlock · r refresh · q quit");
+    let mut status = format!(
+        "↑↓ select · n new · Enter reply · l lock · w watch · m mark thread read · a all read · b reading backup · R reload state · r refresh · q quit\n{} unread · Since last visit: {} topics, {} replies, {} mentions. {}",
+        client.reading.summary.total_unread,
+        client.reading.catchup.topics,
+        client.reading.catchup.replies,
+        client.reading.catchup.mentions,
+        client.reading.warning
+    );
     let mut draft: Option<Draft> = None;
     let mut export_path: Option<String> = None;
+    let mut export_reading = false;
+    let mut confirm_read_reload = false;
     let mut refreshed = Instant::now();
     let mut confirm_quit = false;
     let mut confirm_discard = false;
@@ -313,7 +343,8 @@ async fn interface(client: &mut Client) -> anyhow::Result<()> {
                 .constraints([Constraint::Min(5), Constraint::Length(5)])
                 .split(frame.area());
             if let Some(path)=&export_path {
-                frame.render_widget(Paragraph::new(format!("Save {} private encrypted submission(s)\n\n{}▏\n\nChoose a new filename. Existing files are preserved.",client.pending_count(),path)).wrap(Wrap{trim:false}).block(Block::default().borders(Borders::ALL).title("Export pending · Enter save · Esc return")),areas[0]);
+                let description=if export_reading {"private reading-state backup".to_string()}else{format!("{} private encrypted submission(s)",client.pending_count())};
+                frame.render_widget(Paragraph::new(format!("Save {description}\n\n{path}▏\n\nChoose a new filename. Existing files are preserved.")).wrap(Wrap{trim:false}).block(Block::default().borders(Borders::ALL).title(if export_reading {"Export reading state · Enter save · Esc return"}else{"Export pending · Enter save · Esc return"})),areas[0]);
             } else if let Some(d) = &draft {
                 let text = if d.field == 0 {
                     format!("Title: {}▏\n\n{}", d.title, d.body)
@@ -343,8 +374,9 @@ async fn interface(client: &mut Client) -> anyhow::Result<()> {
                             .or_else(|| p["body"].as_str())
                             .unwrap_or("");
                         ListItem::new(format!(
-                            "{}{}: {}",
+                            "{}{}{}: {}{}",
                             if e.kind=="topic"&&client.data.view().locked_topics.contains(&e.id){"🔒 "}else{""},
+                            if e.kind=="topic"&&client.reading.state.as_ref().is_some_and(|s|s.watched.iter().any(|id|id==&e.id)){"★ "}else{""},
                             e.kind,
                             title
                                 .lines()
@@ -352,7 +384,8 @@ async fn interface(client: &mut Client) -> anyhow::Result<()> {
                                 .unwrap_or("")
                                 .chars()
                                 .take(100)
-                                .collect::<String>()
+                                .collect::<String>(),
+                            if e.kind=="topic"&&client.reading.summary.unread.get(&e.id).is_some_and(|n|*n>0){format!(" [{} unread]",client.reading.summary.unread[&e.id])}else{String::new()}
                         ))
                     })
                     .collect::<Vec<_>>();
@@ -427,6 +460,9 @@ async fn interface(client: &mut Client) -> anyhow::Result<()> {
         if k.kind != KeyEventKind::Press {
             continue;
         }
+        if k.code != KeyCode::Char('R') {
+            confirm_read_reload = false;
+        }
         if k.code != KeyCode::Char('d')
             || (draft.is_some() && !k.modifiers.contains(KeyModifiers::CONTROL))
         {
@@ -442,12 +478,24 @@ async fn interface(client: &mut Client) -> anyhow::Result<()> {
                     path.pop();
                 }
                 KeyCode::Enter => {
-                    let result = client.export_pending().and_then(|frame| {
+                    let result = (if export_reading {
+                        client.export_reading()
+                    } else {
+                        client.export_pending()
+                    })
+                    .and_then(|frame| {
                         crate::client_crypto::write_private_file(std::path::Path::new(path), &frame)
                     });
                     match result {
                         Ok(()) => {
-                            status="Private encrypted pending copy saved. Keep your identity recovery file too.".into();
+                            status = format!(
+                                "Private encrypted {} copy saved. Keep your identity recovery file too.",
+                                if export_reading {
+                                    "reading-state"
+                                } else {
+                                    "pending"
+                                }
+                            );
                             export_path = None;
                         }
                         Err(e) => status = format!("Export failed: {e}"),
@@ -469,6 +517,7 @@ async fn interface(client: &mut Client) -> anyhow::Result<()> {
             && k.modifiers.contains(KeyModifiers::CONTROL)
             && client.has_pending()
         {
+            export_reading = false;
             export_path = Some("nightbuoy-pending.nbp".into());
             continue;
         }
@@ -606,12 +655,23 @@ async fn interface(client: &mut Client) -> anyhow::Result<()> {
                 }
             }
             KeyCode::Char('e') if client.has_pending() => {
-                export_path = Some("nightbuoy-pending.nbp".into())
+                export_reading=false;export_path = Some("nightbuoy-pending.nbp".into())
+            }
+            KeyCode::Char('b') => {if client.reading.state.is_some(){export_reading=true;export_path=Some("nightbuoy-private-reading-state.nbs".into());}else{status="Load private reading state first; R reloads it.".into();}}
+            KeyCode::Char('w')|KeyCode::Char('m')=>{
+                let topic=match &target{Some((kind,id,_)) if kind=="topic"=>Some(id.clone()),Some((kind,_,parent)) if kind=="reply"=>Some(parent.clone()),_=>None};
+                status=if let Some(topic)=topic{let change=if k.code==KeyCode::Char('w'){client.toggle_watched(&topic)}else{client.mark_read(&topic)};match change{Err(e)=>e.to_string(),Ok(())=>match client.save_reading().await{Ok(())=>format!("Private reading state saved · {} unread · b exports a backup",client.reading.summary.total_unread),Err(e)=>format!("Reading change remains in memory: {e}. b exports a private backup; R reloads saved state.")}}}else{"Select a topic or reply first.".into()};
+            }
+            KeyCode::Char('a')=>{status=match client.mark_everything_read(){Err(e)=>e.to_string(),Ok(())=>match client.save_reading().await{Ok(())=>"All current history marked read.".into(),Err(e)=>format!("Read markers remain in memory: {e}. b exports a private backup.")}};}
+            KeyCode::Char('R')=>{
+                if client.reading.dirty()&&!confirm_read_reload{status="Unsaved reading changes exist. b exports a backup; R again discards them and reloads saved state.".into();confirm_read_reload=true;}else{status=match async {client.refresh().await?;client.load_reading().await}.await{Ok(())=>"Private reading state reloaded.".into(),Err(e)=>format!("Reading-state reload failed: {e}")};confirm_read_reload=false;}
             }
             KeyCode::Char('q') => {
                 if client.has_pending() && !confirm_quit {
                     status="Unconfirmed submission remains in memory. Press p to retry, e to export; q again discards it and exits.".into();
                     confirm_quit = true;
+                } else if client.reading.dirty()&&!confirm_quit {
+                    status="Reading changes remain in memory. b exports a private backup; q again discards them and exits.".into();confirm_quit=true;
                 } else {
                     break;
                 }

@@ -54,6 +54,8 @@ The opaque format deliberately rejects old plaintext-metadata storage at the sam
 
 The default Docker target and `compose.yaml` run one portable client, with a read-only root filesystem and no database volume. The personal Compose example uses host networking and binds host loopback; on macOS/Windows prefer the native launcher unless Docker host networking is explicitly supported/enabled.
 
+Watch topics, see unread counts and receive a private sign-in summary of missed replies and mentions. Reading state is encrypted for your identity and saved to the original backend when your provider permissions allow it. Account exports/restores private `.nbs` backups for independent copies or sessions without write permission. The terminal supports `w` to watch, `m` to mark a thread read, `a` to mark all read, `b` to export a backup and `R` to reload saved state; `--reading-state-file` and `--export-reading-state` exchange backups with the browser. Reading state is separate from forum archive copies.
+
 Posts support formatted text, preview, code, quotes, spoilers and emoji insertion. Links and external images require an explicit click. Administrators and moderators can lock threads; the terminal uses `l` on a selected topic. Existing communities can explicitly enable current moderation tools from Account. Edits and removals append signed records; recipients retaining old keys/history can still read earlier versions.
 
 ## Backups, availability and recovery

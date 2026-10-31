@@ -6,7 +6,7 @@ export type Member={device:Device;role:string;status:string;floor:number};
 export type View={policy:Policy;epoch:number;members:Record<string,Member>;grants:Record<string,Record<string,string>>;publishers:string[];locked_topics?:string[];discovery?:Discovery};
 export type Published={event:Signed;publisher:string;receipt:string};
 export type Archive={genesis:Signed;controls:Signed[];records:Published[];order:string[];proof?:any;portable_proof?:{anchor?:Archive;headers:Signed[]}};
-export type Verified={checkpoint:string;community:string;tip:string;authority:string;view:View;views:Record<string,View>;archive:Archive;events:Event[]};
+export type Verified={checkpoint:string;community:string;branch:string;tip:string;authority:string;view:View;views:Record<string,View>;archive:Archive;events:Event[]};
 export type Event={hash:string;author:string;control:string;epoch:number;kind:string;id:string;parent:string;previous:string;created:number;signed:Signed};
 function fail(s:string):never{throw Error(s);}
 function array(s:Signed,n:number):any[]{const v=JSON.parse(s.body);if(!Array.isArray(v)||v.length!==n||canonical(v)!==s.body)fail('Invalid protocol encoding.');return v;}
@@ -83,7 +83,7 @@ export async function verifyArchive(archive:Archive,pin?:{community:string;tip:s
   await initProof();verify_consensus(JSON.stringify(view.policy.consensus),JSON.stringify(archive.proof),await hash(canonical(core)));
  }
  if(cert&&(!view.policy.portable||cert.headers.length!==sequence-anchorCount))fail('Invalid portable certificate inventory.');if(view.policy.portable&&view.policy.consensus)fail('Mixed ordering modes.');
- return {checkpoint:view.policy.portable?'p:'+parent:tip,community,tip,authority,view,views,events,archive};
+ return {checkpoint:view.policy.portable?'p:'+parent:tip,community,branch,tip,authority,view,views,events,archive};
 }
 export function parentProblem(events:Event[],version:number|undefined,kind:string,parent:string):string|undefined{if(version!==1||!['topic','reply'].includes(kind))return;const expected=kind==='topic'?'board':'topic',p=events.filter(e=>e.id===parent).at(-1);if(p?.kind!==expected)return 'Parent was removed.';if(kind==='reply'&&events.filter(e=>e.id===p!.parent).at(-1)?.kind!=='board')return 'Parent board was removed.';}
 export function heads(events:Event[],id:string):Event[]{const revisions=events.filter(e=>e.id===id);const parents=new Set(revisions.map(e=>e.previous));return revisions.filter(e=>!parents.has(e.hash)).sort((a,b)=>a.hash.localeCompare(b.hash));}

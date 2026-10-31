@@ -74,6 +74,7 @@ pub struct PendingDraft {
 pub const MAX_PENDING_ITEMS: usize = 100;
 pub const MAX_PENDING_BYTES: usize = 16 * 1024 * 1024;
 pub struct Client {
+    pub reading: crate::client_reading::ReadingPreferences,
     pub connection: Connection,
     pub remote: Remote,
     pub identity: Option<Identity>,
@@ -172,6 +173,7 @@ impl Client {
         connection.branch_pin = data.branch();
         connection.checkpoint = protocol::head(&data.archive)?;
         let mut client = Self {
+            reading: Default::default(),
             connection,
             remote,
             identity,
@@ -186,6 +188,17 @@ impl Client {
             pending_queue: VecDeque::new(),
         };
         client.decrypt_contents()?;
+        if client.identity.as_ref().is_some_and(|who| {
+            client
+                .data
+                .view()
+                .members
+                .get(&who.device.id)
+                .is_some_and(|m| m.status == "active")
+        }) && let Err(e) = client.load_reading().await
+        {
+            client.reading.warning = e.to_string();
+        }
         Ok(client)
     }
     pub fn can_write(&self) -> bool {
@@ -232,6 +245,7 @@ impl Client {
         self.data = data;
         self.connection.checkpoint = protocol::head(&self.data.archive)?;
         self.decrypt_contents()?;
+        self.update_reading_summary();
         Ok(())
     }
     fn decrypt_contents(&mut self) -> anyhow::Result<()> {
@@ -766,6 +780,77 @@ mod tests {
     };
     use std::sync::Arc;
     type Objects = Arc<std::sync::Mutex<BTreeMap<String, Vec<u8>>>>;
+    #[test]
+    fn revoked_identity_can_export_its_own_cached_reading_state() {
+        let who = Identity::generate().unwrap();
+        let key = random::<32>();
+        let backend = Backend {
+            kind: "forgejo".into(),
+            endpoint: "http://127.0.0.1:9".into(),
+            namespace: "test".into(),
+            salt: b64(random::<32>()),
+            owner: "owner".into(),
+            repository: "repo".into(),
+            branch: "main".into(),
+            bucket: String::new(),
+            region: "us-east-1".into(),
+        };
+        let data = data(&who, &backend, &key, "Local export boundary");
+        let state = crate::member_state::MemberState::new(&data);
+        let remote = Remote::new(
+            backend.clone(),
+            Access {
+                backend: backend.id().unwrap(),
+                token: "synthetic-only-token".into(),
+                ..Default::default()
+            },
+            true,
+        )
+        .unwrap();
+        let mut client = Client {
+            connection: Connection {
+                version: 2,
+                primary: backend,
+                replicas: vec![],
+                community: data.community(),
+                branch_pin: data.branch(),
+                checkpoint: protocol::head(&data.archive).unwrap(),
+            },
+            remote,
+            identity: Some(who.clone()),
+            data,
+            contents: Default::default(),
+            rejected: 0,
+            current: key,
+            metadata: MetadataKey::from_epoch(&key),
+            parent: Blob {
+                bytes: vec![],
+                version: "unused".into(),
+                revision: None,
+            },
+            pin: None,
+            pending: None,
+            pending_queue: Default::default(),
+            reading: Default::default(),
+        };
+        client.reading.state = Some(state.clone());
+        // Exercise local backup after the membership cache reports revocation.
+        let view = Arc::make_mut(client.data.views.get_mut(&client.data.tip).unwrap());
+        view.members.get_mut(&who.device.id).unwrap().status = "revoked".into();
+        assert!(!client.can_write());
+        let frame = client.export_reading().unwrap();
+        assert_eq!(
+            who.open_private::<crate::member_state::MemberState>(
+                &client.data.community(),
+                &format!("member-state:{}", client.data.branch()),
+                &frame
+            )
+            .unwrap(),
+            state
+        );
+        client.import_reading(&frame).unwrap();
+        assert!(client.reading.dirty());
+    }
     fn data(who: &Identity, backend: &Backend, key: &[u8; 32], label: &str) -> Data {
         let id = backend.id().unwrap();
         let discovery =
@@ -865,6 +950,7 @@ mod tests {
         .unwrap();
         let metadata = MetadataKey::from_epoch(&old_key);
         let mut client = Client {
+            reading: Default::default(),
             connection: Connection {
                 version: 2,
                 primary: backend,

@@ -1,0 +1,137 @@
+{
+  "notice": "PUBLIC projection fixture only, not a cryptographically valid archive",
+  "owner": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "data": {
+    "archive": {
+      "genesis": {
+        "body": "synthetic reading-state projection; not a signed archive",
+        "signature": ""
+      },
+      "controls": [],
+      "records": [],
+      "order": [
+        "0000000000000000000000000000000000000000000000000000000000000001",
+        "0000000000000000000000000000000000000000000000000000000000000002",
+        "0000000000000000000000000000000000000000000000000000000000000003",
+        "0000000000000000000000000000000000000000000000000000000000000004"
+      ]
+    },
+    "tip": "0000000000000000000000000000000000000000000000000000000000000004",
+    "views": {},
+    "events": [
+      {
+        "hash": "0000000000000000000000000000000000000000000000000000000000000001",
+        "kind": "board",
+        "id": "00000000-0000-0000-0000-000000000001",
+        "parent": "",
+        "previous": "",
+        "author": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "control": "dffe7fa33eee2fd895e93ffc08207c25dda5157e99d0bbc545f843c243524142",
+        "epoch": 1,
+        "created": 253402300799999,
+        "record": {
+          "event": {
+            "body": "synthetic unused body",
+            "signature": ""
+          },
+          "publisher": "",
+          "receipt": ""
+        }
+      },
+      {
+        "hash": "0000000000000000000000000000000000000000000000000000000000000002",
+        "kind": "topic",
+        "id": "00000000-0000-0000-0000-000000000002",
+        "parent": "00000000-0000-0000-0000-000000000001",
+        "previous": "",
+        "author": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "control": "dffe7fa33eee2fd895e93ffc08207c25dda5157e99d0bbc545f843c243524142",
+        "epoch": 1,
+        "created": 1,
+        "record": {
+          "event": {
+            "body": "synthetic unused body",
+            "signature": ""
+          },
+          "publisher": "",
+          "receipt": ""
+        }
+      },
+      {
+        "hash": "0000000000000000000000000000000000000000000000000000000000000003",
+        "kind": "reply",
+        "id": "00000000-0000-0000-0000-000000000003",
+        "parent": "00000000-0000-0000-0000-000000000002",
+        "previous": "",
+        "author": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "control": "dffe7fa33eee2fd895e93ffc08207c25dda5157e99d0bbc545f843c243524142",
+        "epoch": 1,
+        "created": 253402300799999,
+        "record": {
+          "event": {
+            "body": "synthetic unused body",
+            "signature": ""
+          },
+          "publisher": "",
+          "receipt": ""
+        }
+      },
+      {
+        "hash": "0000000000000000000000000000000000000000000000000000000000000004",
+        "kind": "topic",
+        "id": "00000000-0000-0000-0000-000000000004",
+        "parent": "00000000-0000-0000-0000-000000000001",
+        "previous": "",
+        "author": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "control": "dffe7fa33eee2fd895e93ffc08207c25dda5157e99d0bbc545f843c243524142",
+        "epoch": 1,
+        "created": 1,
+        "record": {
+          "event": {
+            "body": "synthetic unused body",
+            "signature": ""
+          },
+          "publisher": "",
+          "receipt": ""
+        }
+      }
+    ]
+  },
+  "contents": {
+    "0000000000000000000000000000000000000000000000000000000000000002": {
+      "title": "Synthetic topic",
+      "body": "Synthetic body"
+    },
+    "0000000000000000000000000000000000000000000000000000000000000003": {
+      "body": "Hello @member-bbbbbbbbbb"
+    },
+    "0000000000000000000000000000000000000000000000000000000000000004": {
+      "title": "Synthetic topic",
+      "body": "Synthetic body"
+    }
+  },
+  "state": {
+    "version": 1,
+    "community": "dffe7fa33eee2fd895e93ffc08207c25dda5157e99d0bbc545f843c243524142",
+    "branch": "dffe7fa33eee2fd895e93ffc08207c25dda5157e99d0bbc545f843c243524142",
+    "since": "0000000000000000000000000000000000000000000000000000000000000002",
+    "visit": "0000000000000000000000000000000000000000000000000000000000000002",
+    "read": {},
+    "watched": [
+      "00000000-0000-0000-0000-000000000002"
+    ]
+  },
+  "expected": {
+    "unread": {
+      "00000000-0000-0000-0000-000000000002": 1,
+      "00000000-0000-0000-0000-000000000004": 1
+    },
+    "missed": {
+      "topics": 1,
+      "replies": 1,
+      "watched": 1,
+      "mentions": 1
+    },
+    "totalUnread": 2
+  }
+}

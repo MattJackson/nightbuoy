@@ -1,5 +1,19 @@
 # Independent architecture and code review
 
+## Watched topics, unread state and catch-up follow-up
+
+Browser and terminal clients now share a bounded branch-bound private reading-state schema and an independent common projection vector. Ledger positions determine unread/catch-up; author clocks do not. Current deleted, unreadable and self-authored posts are excluded, as are posts already read before returning. Private-state requests bind the expected forum, branch and member so delayed requests cannot write into a newly selected session. Backups remain owner-encrypted and are not included in ordinary forum copies.
+
+Review findings corrected: Account/search/hidden-tab refresh could mark unseen replies read; reading-state 401 handlers could retain plaintext; native pending saves could appear clean after undo/restore; and revocation could block local private backup export. Read advancement now requires a displayed visible topic, matching-context 401s lock the client, pending/imported state requires reconciliation, and local backup ownership is separate from remote membership authorization. Explicit quit/sign-out/switch/reload warns about unsaved private state. Rejected native reloads preserve the prior version/state atomically.
+
+Executed checks pass: 31 Rust workspace tests, strict all-feature Clippy, 17 crypto/private/projection tests, six native/provider checks, four portable browser checks and five legacy browser checks. Actual pseudo-terminal acceptance imports/re-exports a GUI `.nbs` backup and performs a native watch with browser-decryptable output. Browser checks restore watches and missed replies/mentions after reload, retain unread replies while Account is open, and lock plaintext on private read/write expiry. Final independent static review closed the concrete findings in this feature scope.
+
+## Outstanding hosted ingress blocker
+
+Separate read-only review confirmed that the global 132 MiB body limit permits unauthenticated bootstrapped sessions to buffer large bodies before endpoint authorization, with unbounded concurrent requests per cookie. Before hosted release, admission must enforce per-operation/authentication limits and per-session/global processing permits before collecting streamed bodies. This is an open release blocker; the reading-state feature checks above do not close it.
+
+Native package rehearsal 41166615828 and static Linux rehearsal 41166615849 passed at commit 6d5a9f6. Rehearsals 41167738965 and 41167738987 also passed for the later owner-private primitive milestone 684bded. These cover Linux/macOS/Windows x86-64/ARM64 and static Linux x86-64/ARM64/ARMv7; later commits still require their own checks. Remaining formats/signing/production gates apply.
+
 ## Owner-private mutable objects follow-up
 
 Private-state locators derive from the member signing secret with a separate HMAC domain and purpose/community binding; native/browser interoperability has an independent browser-generated public test vector. Objects occupy a distinct opaque keyspace, use padded owner-private frames and a 256 KiB bound, and never append forum history. Routes enforce POST/CSRF, current membership and original backend identity. Conditional updates reject stale versions, accept retries of the exact confirmed candidate and verify readback after ambiguous acknowledgments. Clients remain responsible for decrypting/schema/branch checks. These objects are a primitive; watched/unread interfaces and owner backup handling are not implemented yet.
