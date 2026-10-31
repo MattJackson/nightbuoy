@@ -515,6 +515,13 @@ impl Session {
         }
         Ok(())
     }
+    fn readable(&self) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            self.authenticated && self.metadata.is_some() && self.data.is_some(),
+            "sign in and unlock forum access required"
+        );
+        Ok(())
+    }
     fn active(&self) -> anyhow::Result<&Member> {
         anyhow::ensure!(self.authenticated, "sign in required");
         let m = self
@@ -849,7 +856,7 @@ async fn endpoint(
    match object{Some(blob)=>json!({"frame":b64(blob.bytes),"version":blob.version}),None=>Value::Null}
   },
   "me"=>{anyhow::ensure!(s.authenticated,"sign in required");s.refresh().await?;json!({"member":s.data.as_ref().and_then(|d|d.view().members.get(&s.device.as_ref().unwrap().id)),"read_access":s.metadata.is_some()&&s.data.is_some()})},
-  "sync"=>{s.refresh().await?;anyhow::ensure!(s.authenticated&&s.metadata.is_some()&&s.data.is_some(),"sign in and unlock forum access required");serde_json::to_value(&s.data.as_ref().unwrap().archive).map_err(anyhow::Error::from)?},
+  "sync"=>{s.refresh().await?;s.readable()?;serde_json::to_value(&s.data.as_ref().unwrap().archive).map_err(anyhow::Error::from)?},
   "join"=>{anyhow::ensure!(s.authenticated,"sign in required");let signed:Signed=serde_json::from_value(v["signed"].clone())?;let device=s.device.as_ref().unwrap();let expected=if let Some(data)=&s.data{json!(["nightbuoy-join",1,data.community(),device])}else{json!(["nightbuoy-join",2,s.connection.as_ref().unwrap().primary.id()?,device])};anyhow::ensure!(signed.body==serde_json::to_string(&expected)?,"invalid membership request");verify_member(&device.sign,&signed.body,&signed.signature)?;json!({"request":{"device":device,"signed":signed},"export_required":true})},
   "requests"=>{s.active()?;json!(s.requests)},
   "request-import"=>{anyhow::ensure!(s.active()?.role=="administrator","administrator required");let device:Device=serde_json::from_value(v["device"].clone())?;device.validate()?;let signed:Signed=serde_json::from_value(v["signed"].clone())?;let expected=serde_json::to_string(&json!(["nightbuoy-join",1,s.data.as_ref().unwrap().community(),device]))?;let opaque_target=serde_json::to_string(&json!(["nightbuoy-join",2,s.connection.as_ref().unwrap().primary.id()?,device]))?;anyhow::ensure!(signed.body==expected||signed.body==opaque_target,"request targets another forum");verify_member(&device.sign,&signed.body,&signed.signature)?;anyhow::ensure!(s.requests.len()<100,"request limit");s.requests.push(json!({"device":device,"signed":signed,"verified":false}));json!({"ok":true})},
@@ -883,10 +890,10 @@ async fn endpoint(
    let remote=s.remote.as_ref().unwrap();publish_opaque(remote,&plan.metadata,&data,&s.connection.as_ref().unwrap().primary,plan.parent.as_ref(),Some(&plan.item)).await?;
    let metadata=plan.metadata.clone();let wrapped=plan.wrapped.clone();if let Some(old)=s.metadata.replace(metadata){s.remember_metadata(old);}s.head_grants=wrapped;s.data=Some(data);s.plan=None;s.refresh().await?;json!({"confirmed":true})
   },
-  "export"=>{s.refresh().await?;s.active()?;let data=s.data.as_ref().unwrap();let d=data.view().discovery.as_ref().ok_or_else(||anyhow::anyhow!("signed discovery grants required"))?;let bytes=opaque::head_frame(s.metadata.as_ref().unwrap(),&d.wrapped.values().cloned().collect::<Vec<_>>(),&d.ephemeral,&data.archive,&opaque::context("","private-archive"))?;json!({"frame":b64(bytes)})},
-  "replication"=>{s.active()?;json!({"copied":s.data.as_ref().and_then(|d|protocol::head(&d.archive).ok()).is_some_and(|h|s.copied_head.as_ref()==Some(&h)),"remote":true,"from_replica":s.from_replica,"error":if s.source_warning{Some("A configured source is unavailable, invalid, stale or conflicting. Reading a verified compatible copy; write authority has not changed.")}else{None}})},
+  "export"=>{s.refresh().await?;s.readable()?;let data=s.data.as_ref().unwrap();let d=data.view().discovery.as_ref().ok_or_else(||anyhow::anyhow!("signed discovery grants required"))?;let bytes=opaque::head_frame(s.metadata.as_ref().unwrap(),&d.wrapped.values().cloned().collect::<Vec<_>>(),&d.ephemeral,&data.archive,&opaque::context("","private-archive"))?;json!({"frame":b64(bytes)})},
+  "replication"=>{s.readable()?;json!({"copied":s.data.as_ref().and_then(|d|protocol::head(&d.archive).ok()).is_some_and(|h|s.copied_head.as_ref()==Some(&h)),"remote":true,"from_replica":s.from_replica,"error":if s.source_warning{Some("A configured source is unavailable, invalid, stale or conflicting. Reading a verified compatible copy; write authority has not changed.")}else{None}})},
   "replica-copy"=>{
-   s.refresh().await?;s.active()?;
+   s.refresh().await?;s.readable()?;
    #[derive(Deserialize)]#[serde(deny_unknown_fields)]struct Input{backend:Backend,access:Access,#[serde(default)]metadata_keys:Vec<String>}
    let i:Input=serde_json::from_value(v)?;if let Some(allowed)=&app.allowed{anyhow::ensure!(allowed.replicas.contains(&i.backend),"operator has not approved this backend");}
    anyhow::ensure!(s.replicas.len()<50,"replica limit");let remote=Remote::new(i.backend.clone(),i.access,app.testing)?;let key=s.metadata.as_ref().ok_or_else(||anyhow::anyhow!("unlock metadata first"))?;let mut old_result=load(&remote,key).await;

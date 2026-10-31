@@ -1,5 +1,11 @@
 # Independent architecture and code review
 
+## Git attribution and read-capability backup follow-up
+
+GitHub and Forgejo writes explicitly set both Git author and committer to `NightBuoy <storage@nightbuoy.invalid>`, avoiding provider defaults that publish the authenticated account name/email. This does not conceal provider authentication/activity, signatures, logs, sizes or timing, and does not rewrite earlier commits. Provider fixtures assert both fields on every repository write. The opt-in live GitHub rehearsal verified every newly generated commit on its isolated synthetic branch, along with large-object cold reads and the CAS race; the temporary branch was removed.
+
+Authenticated readers with verified unlocked data can now export encrypted archives, query their own backup status and copy unchanged encrypted history without active forum membership. Previously these operations incorrectly reused the posting membership gate. Destination write credentials, hosted operator destination allowlists, conditional updates, ancestry validation and original signed write authority remain required/preserved. The root/capability acceptance check verifies guest copying and cold recovery, unchanged primary objects, refused posting and refused operations after logout. Backup destinations remain session-private and do not add an administrator-visible registry.
+
 ## Watched topics, unread state and catch-up follow-up
 
 Browser and terminal clients now share a bounded branch-bound private reading-state schema and an independent common projection vector. Ledger positions determine unread/catch-up; author clocks do not. Current deleted, unreadable and self-authored posts are excluded, as are posts already read before returning. Private-state requests bind the expected forum, branch and member so delayed requests cannot write into a newly selected session. Backups remain owner-encrypted and are not included in ordinary forum copies.

@@ -69,7 +69,14 @@ try{
  // Cold session reads the large remote snapshot instead of using the publisher's RAM cache.
  await b('logout',{});const cold=await session();await cold('connect',{connection:await a('connection'),access});await login(cold,true);
  assert.equal((await verifyArchive(await cold('sync'))).events.length,3);
- console.log('Live GitHub passed: opaque v2 create/post, >1 MiB encrypted objects, cold read, conditional race and loser retry.');
+ // Inspect only commits generated on this temporary branch, not inherited history.
+ const commits=JSON.parse(await gh(['api',`repos/${owner}/${repo}/compare/${sha}...${branch}`])).commits;
+ assert.ok(commits.length>0,'no generated commits to inspect');
+ for(const entry of commits)for(const field of ['author','committer']){
+  assert.equal(entry.commit[field].name,'NightBuoy');
+  assert.equal(entry.commit[field].email,'storage@nightbuoy.invalid');
+ }
+ console.log('Live GitHub passed: opaque v2 create/post, >1 MiB encrypted objects, cold read, conditional race, loser retry and generic Git attribution.');
  key.fill(0);
 }finally{
  if(child&&child.exitCode===null){child.kill('SIGINT');await new Promise(r=>child.once('exit',r));}

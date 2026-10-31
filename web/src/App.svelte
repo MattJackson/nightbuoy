@@ -111,7 +111,7 @@
   const nextKeys:Record<number,Uint8Array<ArrayBuffer>>={};for(const [epoch,grants] of Object.entries(v.view.grants)){if(grants[identity.device.id])nextKeys[Number(epoch)]=await c.openGrant(who,grants[who.device.id]);}
   if(capabilityEpochKey&&!nextKeys[v.view.epoch])nextKeys[v.view.epoch]=capabilityEpochKey.slice();
   const {contents:next,rejected}=await openContents(v.events,nextKeys);if(identity!==who){for(const key of Object.values(nextKeys))key.fill(0);return;}badEvents=rejected;
-  for(const key of Object.values(keys))key.fill(0);keys=nextKeys;contents=next;verified=v;pin();const queued=portable?pending:await listPending(who.device.id,v.community);for(const item of queued)if(v.events.some(e=>e.hash===item.hash))await dropPending(item.hash);if(identity!==who)return;pending=queued.filter(item=>!v.events.some(e=>e.hash===item.hash));settings={...v.view.policy};replica=verified.view.members[who.device.id]?.status==='active'?await api('/api/replication'):{copied:false,remote:true};
+  for(const key of Object.values(keys))key.fill(0);keys=nextKeys;contents=next;verified=v;pin();const queued=portable?pending:await listPending(who.device.id,v.community);for(const item of queued)if(v.events.some(e=>e.hash===item.hash))await dropPending(item.hash);if(identity!==who)return;pending=queued.filter(item=>!v.events.some(e=>e.hash===item.hash));settings={...v.view.policy};replica=portable||verified.view.members[who.device.id]?.status==='active'?await api('/api/replication'):{copied:false,remote:true};
   if(!status.read_only&&v.view.members[identity.device.id]?.role==='administrator')requests=await api('/api/requests');else requests=[];
   await loadReading(v,who);if(identity!==who)return;readCurrentTopic();if(readingDirty)void saveReading();
  }

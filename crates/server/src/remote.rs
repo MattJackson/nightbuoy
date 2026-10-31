@@ -388,7 +388,12 @@ impl Remote {
             return Ok(());
         }
         anyhow::ensure!(!self.access.token.is_empty(), "write credentials required");
-        let mut body = json!({"message":"NightBuoy encrypted append","branch":self.backend.branch,"content":b64(&bytes)});
+        // Do not let the provider default Git attribution to the token owner.
+        // Provider authentication/activity logs remain outside this protection.
+        let attribution = json!({"name":"NightBuoy", "email":"storage@nightbuoy.invalid"});
+        let mut body = json!({"message":"NightBuoy encrypted append",
+            "branch":self.backend.branch,"content":b64(&bytes),
+            "author":attribution,"committer":attribution});
         if let Some(b) = expected {
             body["sha"] = json!(b.version);
         }
