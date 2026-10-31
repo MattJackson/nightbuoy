@@ -1,0 +1,42 @@
+// The existing anonymous v2 envelope, reused for participant-private client objects.
+import * as c from './crypto.ts';
+import {metadataKey,wrapEpochForMembers,unwrapEpoch,type ForumAccess} from './metadata.ts';
+import {deriveShared,sealShared,openShared} from './shared-frame.ts';
+export const anonymousBoxBytes=4674,maximumBoxes=48;
+export type Envelope={ephemeral:string;wrapped:Record<string,string>};
+const concat=(a:Uint8Array<ArrayBuffer>,b:Uint8Array<ArrayBuffer>)=>{const out=new Uint8Array(a.length+b.length);out.set(a);out.set(b,a.length);return out;};
+const hex=(raw:Uint8Array)=>Array.from(raw,b=>b.toString(16).padStart(2,'0')).join('');
+export async function anonymousEnvelope(recipients:c.Device[],key:Uint8Array<ArrayBuffer>):Promise<Envelope>{
+ if(!recipients.length||recipients.length>8||new Set(recipients.map(m=>m.id)).size!==recipients.length)throw Error('Choose 1–8 distinct recipients.');
+ return wrapEpochForMembers(recipients,key);
+}
+export function splitAnonymous(frame:Uint8Array<ArrayBuffer>){
+ if(frame[0]!==2||frame.length<anonymousBoxBytes||frame.length>256*1024||new DataView(frame.buffer,frame.byteOffset).getUint32(66,false)!==8||(frame.length-578)%4096)throw Error('Invalid anonymous client frame.');
+ const prefix=frame.slice(0,550),slots:string[]=[];for(let i=70;i<550;i+=60)slots.push(c.b64(frame.slice(i,i+60)));
+ return {ephemeral:c.b64(frame.slice(1,66)),slots,prefix,cipher:concat(new Uint8Array([3]),frame.slice(550))};
+}
+export async function sealAnonymous(key:Uint8Array<ArrayBuffer>,envelope:Envelope,value:unknown,context:Uint8Array<ArrayBuffer>){
+ if(key.length!==32)throw Error('Invalid anonymous key.');
+ const metadata=await metadataKey(key),raw=c.un64(metadata),grants=Object.keys(envelope.wrapped).sort().map(id=>c.un64(envelope.wrapped[id]));
+ if(!grants.length||grants.length>8||grants.some(v=>v.length!==60)||c.un64(envelope.ephemeral).length!==65)throw Error('Invalid anonymous recipients.');
+ try{
+  // Stable covers prevent intersecting retries/copies from revealing real slot count.
+  const seed=await deriveShared(metadata,'nightbuoy-discovery-cover-v2');
+  // deriveShared canonicalizes strings; the forum format's cover seed uses raw bytes.
+  const material=await crypto.subtle.importKey('raw',raw,{name:'HMAC',hash:'SHA-256'},false,['sign']);
+  const coverSeed=hex(new Uint8Array(await crypto.subtle.sign('HMAC',material,c.bytes('nightbuoy-discovery-cover-v2'))));seed.fill(0);
+  const coverKey=await crypto.subtle.importKey('raw',c.bytes(coverSeed),{name:'HMAC',hash:'SHA-256'},false,['sign']);
+  while(grants.length<8){const index=grants.length,first=new Uint8Array(await crypto.subtle.sign('HMAC',coverKey,c.bytes(`${envelope.ephemeral}:${index}:0`))),second=new Uint8Array(await crypto.subtle.sign('HMAC',coverKey,c.bytes(`${envelope.ephemeral}:${index}:1`)));grants.push(concat(first,second.slice(0,28)));}
+  for(let i=7;i>0;i--){const n=i+1,limit=Math.floor(4294967296/n)*n;let word:number;do{word=new DataView(c.random(4).buffer).getUint32(0,false);}while(word>=limit);const j=word%n;[grants[i],grants[j]]=[grants[j],grants[i]];}
+  const prefix=new Uint8Array(550);prefix[0]=2;prefix.set(c.un64(envelope.ephemeral),1);new DataView(prefix.buffer).setUint32(66,8,false);for(let i=0;i<8;i++)prefix.set(grants[i],70+i*60);
+  const sealed=await sealShared(raw,concat(context,prefix),value);return concat(prefix,sealed.slice(1));
+ }finally{raw.fill(0);}
+}
+export async function openAnonymous(key:Uint8Array<ArrayBuffer>,frame:Uint8Array<ArrayBuffer>,context:Uint8Array<ArrayBuffer>){const {prefix,cipher}=splitAnonymous(frame),raw=c.un64(await metadataKey(key));try{return await openShared(raw,concat(context,prefix),cipher);}finally{raw.fill(0);}}
+export async function openAnonymousFor(identity:c.Identity,frame:Uint8Array<ArrayBuffer>,context:Uint8Array<ArrayBuffer>){const {ephemeral,slots}=splitAnonymous(frame),key=await unwrapEpoch(identity,ephemeral,slots);try{return {value:await openAnonymous(key,frame,context),key:key.slice()};}finally{key.fill(0);}}
+export async function sealBox(recipient:c.Device,value:c.Signed,context:Uint8Array<ArrayBuffer>){if(c.bytes(c.canonical(value)).length>4092)throw Error('Invitation exceeds capacity.');const key=c.random();try{const result=await sealAnonymous(key,await anonymousEnvelope([recipient],key),value,context);if(result.length!==anonymousBoxBytes)throw Error('Invalid invitation size.');return result;}finally{key.fill(0);}}
+export function encodeBoxes(boxes:Uint8Array<ArrayBuffer>[]){
+ if(boxes.length>maximumBoxes||new Set(boxes.map(c.b64)).size!==boxes.length)throw Error('Invitation collection is full or duplicated.');
+ const out=new Uint8Array(3+boxes.length*anonymousBoxBytes);out[0]=4;new DataView(out.buffer).setUint16(1,boxes.length,false);for(let i=0;i<boxes.length;i++){if(boxes[i].length!==anonymousBoxBytes)throw Error('Invalid invitation size.');splitAnonymous(boxes[i]);out.set(boxes[i],3+i*anonymousBoxBytes);}return out;
+}
+export function decodeBoxes(frame:Uint8Array<ArrayBuffer>){if(frame[0]!==4||frame.length<3)throw Error('Invalid invitation collection.');const count=new DataView(frame.buffer,frame.byteOffset).getUint16(1,false);if(count>maximumBoxes||frame.length!==3+count*anonymousBoxBytes)throw Error('Invalid invitation count.');const boxes:Uint8Array<ArrayBuffer>[]=[];for(let i=0;i<count;i++){const box=frame.slice(3+i*anonymousBoxBytes,3+(i+1)*anonymousBoxBytes);splitAnonymous(box);boxes.push(box);}if(new Set(boxes.map(c.b64)).size!==boxes.length)throw Error('Duplicate invitation.');return boxes;}
