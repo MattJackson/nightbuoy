@@ -35,7 +35,7 @@ let installedSnap=false,installedFlatpak=false,builtImage=false,primaryError;
 const runtimeEnv=Object.fromEntries(['PATH','HOME','USER','LOGNAME','XDG_RUNTIME_DIR','XDG_DATA_DIRS','XDG_DATA_HOME','DBUS_SESSION_BUS_ADDRESS'].filter(k=>process.env[k]!==undefined).map(k=>[k,process.env[k]]));
 function run(command,args,options={}){
  const r=spawnSync(command,args,{stdio:'inherit',timeout:300000,...options});
- if(r.error)throw r.error;assert.equal(r.status,0,`${command} failed`);return r;
+ if(r.error)throw r.error;assert.equal(r.status,0,`${command} failed${r.stderr?'\n'+String(r.stderr).slice(-8000):''}`);return r;
 }
 async function put(path,value,mode){await mkdir(resolve(path,'..'),{recursive:true});await writeFile(path,value,mode?{mode}:{});}
 async function download(url,path,sha){
