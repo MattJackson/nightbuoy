@@ -1,5 +1,11 @@
 # Independent architecture and code review
 
+## Owner-private mutable objects follow-up
+
+Private-state locators derive from the member signing secret with a separate HMAC domain and purpose/community binding; native/browser interoperability has an independent browser-generated public test vector. Objects occupy a distinct opaque keyspace, use padded owner-private frames and a 256 KiB bound, and never append forum history. Routes enforce POST/CSRF, current membership and original backend identity. Conditional updates reject stale versions, accept retries of the exact confirmed candidate and verify readback after ambiguous acknowledgments. Clients remain responsible for decrypting/schema/branch checks. These objects are a primitive; watched/unread interfaces and owner backup handling are not implemented yet.
+
+Independent review caught fallback membership being used for a private write despite an original-backend ID check. Writes now require primary-only refresh. Regressions leave the primary private path writable while disabling its forum head and providing a current replica; writes fail without changing private bytes. All six portable/native checks pass across GitHub, Forgejo and S3, including private CAS conflict, missing/oversized/invalid paths, unauthorized membership, lost-ack exact retry, cold persistence and unchanged forum order. Crypto/private tests, browser/native locator interoperability and strict all-feature Clippy pass. Final read-only review found no further concrete issue in this scope.
+
 ## Static Linux rehearsal recipes
 
 The musl matrix targets x86-64, ARM64 and ARMv7. Cross tool/download hashes and container digests are pinned; the artifact check rejects a dynamic ELF interpreter, compares the extracted binary and executes the embedded UI/API smoke check. Only fixed QEMU executable names are accepted as test wrappers. Static inspection found no concrete issue, actionlint and JavaScript syntax checks pass, and the unchanged native smoke behavior passes locally. Cross-build/runtime results are still pending; definitions are not evidence of successful platform support.

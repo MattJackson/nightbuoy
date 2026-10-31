@@ -683,6 +683,19 @@ async fn endpoint(
    json!({"ok":true})},
   "logout"=>{app.admissions.lock().await.remove(&hash(&key));s.authenticated=false;s.device=None;s.challenge=None;s.plan=None;s.metadata=None;s.metadata_history.clear();s.data=None;s.head_grants.clear();s.locked=true;json!({"ok":true})},
   "disconnect"=>{app.admissions.lock().await.remove(&hash(&key));*s=Session::empty(s.csrf.clone(),s.created,s.operator_checkpoint.clone());json!({"ok":true})},
+  "private-read"|"private-write"=>{
+   if path=="private-write"{s.refresh_source(false).await?;}else{s.refresh().await?;}s.active()?;
+   let remote=s.remote.as_ref().ok_or_else(||anyhow::anyhow!("connect to a backend first"))?;
+   anyhow::ensure!(remote.backend.id()?==s.connection.as_ref().unwrap().primary.id()?,"private state requires its original backend");
+   let locator=v["locator"].as_str().unwrap_or("");
+   let object=if path=="private-read"{crate::private_objects::read(remote,locator).await?}else{
+    let encoded=v["frame"].as_str().ok_or_else(||anyhow::anyhow!("private frame required"))?;
+    anyhow::ensure!(encoded.len()<=crate::private_objects::MAX_PRIVATE_OBJECT*2,"private frame too large");
+    let expected=match &v["version"]{Value::Null=>None,Value::String(s)=>Some(s.as_str()),_=>anyhow::bail!("invalid private state version")};
+    Some(crate::private_objects::write(remote,locator,decode(encoded)?,expected).await?)
+   };
+   match object{Some(blob)=>json!({"frame":b64(blob.bytes),"version":blob.version}),None=>Value::Null}
+  },
   "me"=>{anyhow::ensure!(s.authenticated,"sign in required");s.refresh().await?;json!({"member":s.data.as_ref().and_then(|d|d.view().members.get(&s.device.as_ref().unwrap().id)),"read_access":s.metadata.is_some()&&s.data.is_some()})},
   "sync"=>{s.refresh().await?;anyhow::ensure!(s.authenticated&&s.metadata.is_some()&&s.data.is_some(),"sign in and unlock forum access required");serde_json::to_value(&s.data.as_ref().unwrap().archive).map_err(anyhow::Error::from)?},
   "join"=>{anyhow::ensure!(s.authenticated,"sign in required");let signed:Signed=serde_json::from_value(v["signed"].clone())?;let device=s.device.as_ref().unwrap();let expected=if let Some(data)=&s.data{json!(["nightbuoy-join",1,data.community(),device])}else{json!(["nightbuoy-join",2,s.connection.as_ref().unwrap().primary.id()?,device])};anyhow::ensure!(signed.body==serde_json::to_string(&expected)?,"invalid membership request");verify_member(&device.sign,&signed.body,&signed.signature)?;json!({"request":{"device":device,"signed":signed},"export_required":true})},

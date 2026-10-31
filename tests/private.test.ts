@@ -1,5 +1,5 @@
 import {test} from 'node:test';import assert from 'node:assert/strict';
-import * as c from '../web/src/lib/crypto.ts';import {sealPrivate,openPrivate} from '../web/src/lib/private.ts';
+import * as c from '../web/src/lib/crypto.ts';import {sealPrivate,openPrivate,privateLocator} from '../web/src/lib/private.ts';
 test('private exports conceal metadata and bind identity, forum and purpose',async()=>{
  const owner=await c.generate(),other=await c.generate(),community='a'.repeat(64),value={owner:owner.device.id,name:'Private pending metadata',created:123456,body:'Private draft'};
  const frame=await sealPrivate(owner,community,'pending',value);assert.equal(frame[0],3);
@@ -10,6 +10,8 @@ test('private exports conceal metadata and bind identity, forum and purpose',asy
  await assert.rejects(openPrivate(owner,community,'member-state',frame),/does not unlock/);
  for(const offset of [0,1,13,frame.length-1]){const bad=frame.slice();bad[offset]^=1;await assert.rejects(openPrivate(owner,community,'pending',bad));}
  await assert.rejects(openPrivate(owner,community,'pending',frame.slice(0,-1)),/Invalid private/);
+ const locator=await privateLocator(owner,community,'member-state');assert.match(locator,/^[a-f0-9]{64}$/);assert.equal(await privateLocator(owner,community,'member-state'),locator);
+ assert.notEqual(await privateLocator(other,community,'member-state'),locator);assert.notEqual(await privateLocator(owner,'b'.repeat(64),'member-state'),locator);assert.notEqual(await privateLocator(owner,community,'pending'),locator);
 });
 
 test('pending imports validate routing and content before queueing; aggregate limits preserve exportability',async()=>{

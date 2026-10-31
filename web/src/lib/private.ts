@@ -1,6 +1,10 @@
 // Member-owned exports. Neither other forum members nor forum epoch keys unlock them.
 import * as c from './crypto.ts';
 const maximum=64*1024*1024,frameMaximum=66*1024*1024+1,block=4096;
+export async function privateLocator(identity:c.Identity,community:string,purpose:string):Promise<string>{
+ const context=c.bytes(JSON.stringify(['nightbuoy-private-path-v1',purpose,community])),d=c.un64(identity.privateSign.d!.replace(/-/g,'+').replace(/_/g,'/'));
+ try{const key=await crypto.subtle.importKey('raw',d,{name:'HMAC',hash:'SHA-256'},false,['sign']);return Array.from(new Uint8Array(await crypto.subtle.sign('HMAC',key,context)),b=>b.toString(16).padStart(2,'0')).join('');}finally{d.fill(0);}
+}
 async function privateKey(identity:c.Identity,community:string,purpose:string){
  const context=c.bytes(JSON.stringify(['nightbuoy-private-v1',purpose,community]));
  const d=c.un64(identity.privateSign.d!.replace(/-/g,'+').replace(/_/g,'/'));

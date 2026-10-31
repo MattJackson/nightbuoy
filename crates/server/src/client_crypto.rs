@@ -158,6 +158,12 @@ impl Identity {
         frame.extend(key.seal(value, &context)?);
         Ok(frame)
     }
+    pub fn private_locator(&self, community: &str, purpose: &str) -> anyhow::Result<String> {
+        Ok(keyed(
+            &self.sign.to_bytes(),
+            &serde_json::to_vec(&json!(["nightbuoy-private-path-v1", purpose, community]))?,
+        ))
+    }
     pub fn open_private<T: serde::de::DeserializeOwned>(
         &self,
         community: &str,
@@ -631,6 +637,17 @@ mod tests {
                 .contains("discovery-key mismatch")
         );
         let private_frame = decode(fixture["private_frame"].as_str().unwrap()).unwrap();
+        let locator: Value =
+            serde_json::from_str(include_str!("../tests/fixtures/private-locator.json")).unwrap();
+        assert_eq!(who.device.id, locator["owner"]);
+        assert_eq!(
+            who.private_locator(
+                locator["community"].as_str().unwrap(),
+                locator["purpose"].as_str().unwrap()
+            )
+            .unwrap(),
+            locator["locator"]
+        );
         assert_eq!(
             who.open_private::<Value>(&"a".repeat(64), "pending", &private_frame)
                 .unwrap(),

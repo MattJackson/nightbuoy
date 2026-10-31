@@ -19,4 +19,5 @@ pub mod client_crypto;
 pub mod root_url;
 pub mod sealed_storage;
 
+pub mod private_objects;
 pub mod terminal;
