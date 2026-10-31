@@ -7,6 +7,40 @@ use serde_json::{Value, json};
 pub struct Ordering {
     pub version: u8,
     pub primary: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub discovery: Option<Discovery>,
+}
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct Discovery {
+    pub ephemeral: String,
+    pub wrapped: std::collections::BTreeMap<String, String>,
+}
+impl Discovery {
+    pub fn validate(
+        &self,
+        members: &std::collections::BTreeMap<String, Member>,
+    ) -> anyhow::Result<()> {
+        let point = decode(&self.ephemeral)?;
+        anyhow::ensure!(point.len() == 65, "invalid discovery point");
+        p256::PublicKey::from_sec1_bytes(&point)?;
+        let expected = members
+            .iter()
+            .filter(|(_, m)| m.status == "active")
+            .map(|(id, _)| id)
+            .collect::<std::collections::BTreeSet<_>>();
+        anyhow::ensure!(
+            self.wrapped
+                .keys()
+                .collect::<std::collections::BTreeSet<_>>()
+                == expected,
+            "discovery grants must cover active members"
+        );
+        for value in self.wrapped.values() {
+            anyhow::ensure!(decode(value)?.len() == 60, "invalid discovery grant");
+        }
+        Ok(())
+    }
 }
 impl Ordering {
     pub fn validate(&self) -> anyhow::Result<()> {

@@ -1,5 +1,11 @@
 //! Ephemeral companion: sessions, credentials and verified cache are RAM-only.
-use crate::{crypto::*, model::*, portable_protocol as protocol, remote::*};
+use crate::{
+    crypto::*,
+    model::*,
+    portable_protocol as protocol,
+    remote::*,
+    sealed_storage::{self as opaque, MetadataKey},
+};
 use axum::{
     Json, Router,
     body::Bytes,
@@ -38,6 +44,12 @@ struct Session {
     copied_head: Option<String>,
     source_warning: bool,
     data: Option<Data>,
+    metadata: Option<MetadataKey>,
+    metadata_history: Vec<MetadataKey>,
+    locked: bool,
+    head_grants: std::collections::BTreeMap<String, String>,
+    head_ephemeral: String,
+    operator_checkpoint: Option<String>,
     device: Option<Device>,
     challenge: Option<String>,
     authenticated: bool,
@@ -49,6 +61,8 @@ struct Plan {
     body: String,
     data: Data,
     item: protocol::Item,
+    metadata: MetadataKey,
+    wrapped: std::collections::BTreeMap<String, String>,
     parent: Option<Blob>,
 }
 #[derive(Serialize, Deserialize)]
@@ -59,6 +73,9 @@ struct Head {
     branch: String,
     head: String,
     snapshot: String,
+    primary: Backend,
+    grants: std::collections::BTreeMap<String, String>,
+    ephemeral: String,
 }
 type Result<T> = std::result::Result<T, Error>;
 struct Error(anyhow::Error);
@@ -85,27 +102,183 @@ impl IntoResponse for Error {
         (code, Json(json!({"error":message}))).into_response()
     }
 }
-async fn load(r: &Remote) -> anyhow::Result<Option<(Blob, Data, Head)>> {
-    let Some(blob) = r.get("head.json").await? else {
+async fn load(r: &Remote, key: &MetadataKey) -> anyhow::Result<Option<(Blob, Data, Head)>> {
+    let Some(blob) = r.get(&opaque::head_path()).await? else {
         return Ok(None);
     };
-    let h: Head = serde_json::from_slice(&blob.bytes)?;
+    let h: Head = opaque::open_head(
+        key,
+        &blob.bytes,
+        &opaque::context(&r.backend.namespace, "head"),
+    )?;
     anyhow::ensure!(
-        h.version == 1 && hex_id(&h.snapshot) && hex_id(&h.head),
-        "invalid head"
+        h.version == 2 && hex_id(&h.snapshot) && hex_id(&h.head),
+        "invalid encrypted head"
     );
     let snap = r
-        .get(&format!("objects/{}.json", h.snapshot))
+        .get(&h.snapshot)
         .await?
-        .ok_or_else(|| anyhow::anyhow!("snapshot missing"))?;
-    anyhow::ensure!(hash(&snap.bytes) == h.snapshot, "snapshot digest mismatch");
-    let a: Archive = serde_json::from_slice(&snap.bytes)?;
+        .ok_or_else(|| anyhow::anyhow!("encrypted snapshot missing"))?;
+    anyhow::ensure!(
+        hash(&snap.bytes) == h.snapshot,
+        "ciphertext snapshot digest mismatch"
+    );
+    let a: Archive = key.open(
+        &snap.bytes,
+        &opaque::context(&r.backend.namespace, "snapshot"),
+    )?;
     let d = Data::replay(&a)?;
     anyhow::ensure!(
-        d.community() == h.community && d.branch() == h.branch && protocol::head(&a)? == h.head,
-        "head binding mismatch"
+        d.community() == h.community
+            && d.branch() == h.branch
+            && protocol::head(&a)? == h.head
+            && d.view()
+                .policy
+                .portable
+                .as_ref()
+                .is_some_and(|p| h.primary.id().ok().as_ref() == Some(&p.primary)),
+        "encrypted head binding mismatch"
+    );
+    validate_wrapped(&d, &h.grants)?;
+    anyhow::ensure!(
+        d.view()
+            .discovery
+            .as_ref()
+            .is_some_and(|v| v.ephemeral == h.ephemeral),
+        "signed discovery point mismatch"
+    );
+    let (ephemeral, slots, _) = opaque::split_head(&blob.bytes)?;
+    anyhow::ensure!(
+        ephemeral == h.ephemeral && h.grants.values().all(|v| slots.contains(v)),
+        "anonymous key grant context changed"
     );
     Ok(Some((blob, d, h)))
+}
+fn validate_wrapped(
+    data: &Data,
+    wrapped: &std::collections::BTreeMap<String, String>,
+) -> anyhow::Result<()> {
+    let discovery = data
+        .view()
+        .discovery
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("opaque storage requires signed discovery grants"))?;
+    anyhow::ensure!(
+        &discovery.wrapped == wrapped,
+        "unsigned discovery grant replacement forbidden"
+    );
+    let members = data
+        .view()
+        .members
+        .iter()
+        .filter(|(_, m)| m.status == "active")
+        .map(|(id, _)| id)
+        .collect::<std::collections::BTreeSet<_>>();
+    anyhow::ensure!(
+        wrapped.keys().collect::<std::collections::BTreeSet<_>>() == members,
+        "metadata key grants must cover exactly active members"
+    );
+    anyhow::ensure!(
+        data.view()
+            .members
+            .values()
+            .filter(|m| m.status == "active")
+            .all(|m| m.device.discover.is_some()),
+        "active members need anonymous discovery keys"
+    );
+    for v in wrapped.values() {
+        anyhow::ensure!(decode(v)?.len() == 60, "invalid anonymous epoch grant");
+    }
+    Ok(())
+}
+async fn publish_opaque(
+    remote: &Remote,
+    key: &MetadataKey,
+    data: &Data,
+    primary: &Backend,
+    parent: Option<&Blob>,
+    appended: Option<&protocol::Item>,
+) -> anyhow::Result<()> {
+    let discovery = data
+        .view()
+        .discovery
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("signed discovery grants required"))?;
+    let wrapped = &discovery.wrapped;
+    let ephemeral = &discovery.ephemeral;
+    validate_wrapped(data, wrapped)?;
+    for item in if let Some(item) = appended {
+        vec![item.clone()]
+    } else {
+        protocol::items(&data.archive)?
+    } {
+        let bytes = key.seal(
+            &item,
+            &opaque::context(&remote.backend.namespace, "transaction"),
+        )?;
+        remote.immutable(&hash(&bytes), bytes).await?;
+    }
+    let headers = &data.archive.portable_proof.as_ref().unwrap().headers;
+    for header in if appended.is_some() {
+        &headers[headers.len() - 1..]
+    } else {
+        headers.as_slice()
+    } {
+        let bytes = key.seal(
+            header,
+            &opaque::context(&remote.backend.namespace, "certificate"),
+        )?;
+        remote.immutable(&hash(&bytes), bytes).await?;
+    }
+    let bytes = key.seal(
+        &data.archive,
+        &opaque::context(&remote.backend.namespace, "snapshot"),
+    )?;
+    let snapshot = hash(&bytes);
+    remote.immutable(&snapshot, bytes).await?;
+    let head = Head {
+        version: 2,
+        community: data.community(),
+        branch: data.branch(),
+        head: protocol::head(&data.archive)?,
+        snapshot,
+        primary: primary.clone(),
+        grants: wrapped.clone(),
+        ephemeral: ephemeral.clone(),
+    };
+    let frame = opaque::head_frame(
+        key,
+        &wrapped.values().cloned().collect::<Vec<_>>(),
+        ephemeral,
+        &head,
+        &opaque::context(&remote.backend.namespace, "head"),
+    )?;
+    remote.put(&opaque::head_path(), frame, parent).await?;
+    let (_, check, _) = load(remote, key)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("encrypted head readback missing"))?;
+    anyhow::ensure!(
+        protocol::head(&check.archive)? == head.head,
+        "published checkpoint readback changed"
+    );
+    Ok(())
+}
+pub(crate) async fn client_load(
+    remote: &Remote,
+    key: &MetadataKey,
+) -> anyhow::Result<Option<(Blob, Data, Backend)>> {
+    Ok(load(remote, key)
+        .await?
+        .map(|(blob, data, head)| (blob, data, head.primary)))
+}
+pub(crate) async fn client_publish(
+    remote: &Remote,
+    key: &MetadataKey,
+    data: &Data,
+    parent: Option<&Blob>,
+    item: Option<&protocol::Item>,
+) -> anyhow::Result<()> {
+    publish_opaque(remote, key, data, &remote.backend, parent, item).await
 }
 fn admission_available(
     admissions: &HashMap<String, (String, Instant)>,
@@ -119,6 +292,18 @@ fn admission_available(
         < 2
 }
 impl Session {
+    fn remember_metadata(&mut self, old: MetadataKey) {
+        if self.metadata.as_ref().is_some_and(|k| k.same(&old))
+            || self.metadata_history.iter().any(|k| k.same(&old))
+        {
+            return;
+        }
+        self.metadata_history.push(old);
+        if self.metadata_history.len() > 64 {
+            self.metadata_history.remove(0);
+        }
+    }
+
     async fn refresh(&mut self) -> anyhow::Result<Option<Blob>> {
         self.refresh_source(true).await
     }
@@ -127,6 +312,38 @@ impl Session {
             .remote
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("connect to a backend first"))?;
+        if self.metadata.is_none() {
+            let mut sources = vec![r];
+            if fallback {
+                sources.extend(self.replicas.iter());
+            }
+            let mut error = anyhow::anyhow!("no encrypted head available");
+            for (index, source) in sources.iter().enumerate() {
+                match source.get(&opaque::head_path()).await {
+                    Ok(Some(blob)) => {
+                        if let Err(e) = opaque::split_head(&blob.bytes) {
+                            error = e;
+                            continue;
+                        }
+                        self.locked = true;
+                        self.from_replica = index > 0;
+                        return Ok(Some(blob));
+                    }
+                    Ok(None) => {
+                        if index == 0 && self.connection.as_ref().unwrap().community.is_empty() {
+                            anyhow::ensure!(
+                                source.get("head.json").await?.is_none(),
+                                "Legacy plaintext metadata exists here. Choose a new empty directory and explicitly migrate; Git history cannot be made secret retroactively."
+                            );
+                            self.locked = false;
+                            return Ok(None);
+                        }
+                    }
+                    Err(e) => error = e,
+                }
+            }
+            return Err(error);
+        }
         let mut sources = vec![r];
         if fallback {
             sources.extend(self.replicas.iter());
@@ -135,19 +352,21 @@ impl Session {
         let mut last_error = anyhow::anyhow!("no verified compatible source available");
         let mut warnings = false;
         for (index, remote) in sources.iter().enumerate() {
-            match load(remote).await.and_then(|loaded| {
-                if let Some((_, d, _)) = &loaded {
-                    self.compatible(d)?;
-                } else {
-                    anyhow::ensure!(
-                        index == 0
-                            && self.data.is_none()
-                            && self.connection.as_ref().unwrap().community.is_empty(),
-                        "remote head missing or rollback"
-                    );
-                }
-                Ok(loaded)
-            }) {
+            match load(remote, self.metadata.as_ref().unwrap())
+                .await
+                .and_then(|loaded| {
+                    if let Some((_, d, _)) = &loaded {
+                        self.compatible(d)?;
+                    } else {
+                        anyhow::ensure!(
+                            index == 0
+                                && self.data.is_none()
+                                && self.connection.as_ref().unwrap().community.is_empty(),
+                            "remote head missing or rollback"
+                        );
+                    }
+                    Ok(loaded)
+                }) {
                 Ok(value) => {
                     selected = Some((index, value));
                     break;
@@ -164,8 +383,25 @@ impl Session {
         self.from_replica = index > 0;
         self.source_warning = warnings;
         let blob = loaded.as_ref().map(|(b, _, _)| b.clone());
-        if let Some((_, d, _)) = loaded {
+        if let Some((_, d, head)) = loaded {
+            self.locked = false;
+            self.head_grants = head.grants;
+            self.head_ephemeral = head.ephemeral;
+            let unresolved =
+                self.data.is_none() && self.connection.as_ref().unwrap().checkpoint.is_empty();
             let c = self.connection.as_mut().unwrap();
+            if unresolved {
+                let transport = self.remote.as_ref().unwrap();
+                if let Some(rebound) = transport.rebind_same_location(&head.primary)? {
+                    self.remote = Some(rebound);
+                } else if transport.backend.id()? != head.primary.id()?
+                    && !c.replicas.contains(&transport.backend)
+                {
+                    anyhow::ensure!(c.replicas.len() < 50, "replica limit");
+                    c.replicas.push(transport.backend.clone());
+                }
+                c.primary = head.primary;
+            }
             c.community = d.community();
             c.branch_pin = d.branch();
             c.checkpoint = protocol::head(&d.archive)?;
@@ -176,11 +412,11 @@ impl Session {
     fn compatible(&self, d: &Data) -> anyhow::Result<()> {
         let a = &d.archive;
         anyhow::ensure!(
-            d.view()
-                .policy
-                .portable
+            d.view().policy.portable.as_ref().is_some_and(|p| self
+                .connection
                 .as_ref()
-                .is_some_and(|p| Some(&p.primary)
+                .is_some_and(|c| self.data.is_none() && c.checkpoint.is_empty())
+                || Some(&p.primary)
                     == self
                         .connection
                         .as_ref()
@@ -203,6 +439,17 @@ impl Session {
                     .any(|h| protocol::digest(h).ok().as_ref() == Some(&connection.checkpoint)),
             "checkpoint fork or rollback"
         );
+        if let Some(checkpoint) = &self.operator_checkpoint {
+            anyhow::ensure!(
+                a.portable_proof
+                    .as_ref()
+                    .unwrap()
+                    .headers
+                    .iter()
+                    .any(|h| protocol::digest(h).ok().as_ref() == Some(checkpoint)),
+                "operator checkpoint rollback or fork"
+            );
+        }
         let expected = &connection.community;
         anyhow::ensure!(
             expected.is_empty() || expected == &d.community(),
@@ -352,6 +599,12 @@ async fn new_session(State(app): State<App>, headers: HeaderMap) -> Response {
             copied_head: None,
             source_warning: false,
             data: None,
+            metadata: None,
+            metadata_history: vec![],
+            locked: false,
+            head_grants: Default::default(),
+            head_ephemeral: String::new(),
+            operator_checkpoint: app.allowed.as_ref().map(|c| c.checkpoint.clone()),
             device: None,
             challenge: None,
             authenticated: false,
@@ -386,40 +639,44 @@ async fn endpoint(
  let key=crate::api::cookie(&headers,"nb_portable").ok_or_else(||anyhow::anyhow!("session required"))?;
  let session=app.sessions.lock().await.get(&hash(&key)).cloned().ok_or_else(||anyhow::anyhow!("session expired"))?;let mut s=session.lock().await;
  anyhow::ensure!(s.created.elapsed()<Duration::from_secs(8*3600),"session expired");
- if !matches!(path.as_str(),"status"|"branding"|"connection"|"me"|"sync"|"requests"|"replication"){anyhow::ensure!(method==axum::http::Method::POST,"POST required");}
+ if !matches!(path.as_str(),"status"|"branding"|"connection"|"me"|"sync"|"requests"|"replication"|"export"){anyhow::ensure!(method==axum::http::Method::POST,"POST required");}
  if method!=axum::http::Method::GET {anyhow::ensure!(headers.get("x-nightbuoy-csrf").and_then(|h|h.to_str().ok())==Some(s.csrf.as_str()),"CSRF check failed");}
  let v:Value=if body.is_empty(){Value::Null}else{serde_json::from_slice(&body).map_err(anyhow::Error::from)?};
  let out=match path.as_str(){
   "branding"=>app.branding.as_ref().map(|b|b.public()).unwrap_or(json!({"name":"NightBuoy","home":"/","tagline":"Community-owned conversations.","logo":"/nightbuoy.svg","favicon":"/nightbuoy.svg","links":[]})),
+  "resolve"=>{let request:crate::root_url::RootRequest=serde_json::from_value(v)?;let (connection,access)=crate::root_url::resolve(request,app.testing,app.allowed.as_ref()).await?;json!({"connection":connection,"backend":access.backend})},
+  "bootstrap"=>{let mut sources=vec![s.remote.as_ref().ok_or_else(||anyhow::anyhow!("connect to a storage root first"))?];sources.extend(s.replicas.iter());let index=v["source"].as_u64().unwrap_or(0) as usize;let total=sources.len();let (ephemeral,grants)=if let Some(remote)=sources.get(index){match remote.get(&opaque::head_path()).await{Ok(Some(blob))=>opaque::split_head(&blob.bytes).map(|(e,g,_)|(e,g)).unwrap_or_default(),_=>Default::default()}}else{Default::default()};json!({"ephemeral":ephemeral,"grants":grants,"sources":total})},
+  "metadata"=>{let candidate=MetadataKey::from_base64(v["key"].as_str().unwrap_or(""))?;let previous_connection=s.connection.clone();let previous_data=s.data.clone();let previous_grants=s.head_grants.clone();let previous_ephemeral=s.head_ephemeral.clone();let previous_locked=s.locked;let previous_warning=s.source_warning;let previous_from_replica=s.from_replica;let previous_remote=s.remote.clone();if let Some(expected)=v["community"].as_str().filter(|c|!c.is_empty())&&let Some(c)=s.connection.as_mut(){anyhow::ensure!(c.community.is_empty()||c.community==expected,"identity belongs to another forum");c.community=expected.into();}let old=s.metadata.replace(candidate);
+   match s.refresh().await{Ok(_)=>{if let Some(old)=old{s.remember_metadata(old);}json!({"unlocked":true})},Err(e)=>{s.metadata=old;s.connection=previous_connection;s.data=previous_data;s.head_grants=previous_grants;s.head_ephemeral=previous_ephemeral;s.locked=previous_locked;s.source_warning=previous_warning;s.from_replica=previous_from_replica;s.remote=previous_remote;return Err(e)}}},
   "connect"=>{
-   #[derive(Deserialize)]#[serde(deny_unknown_fields)]struct Input{connection:Connection,access:Access,#[serde(default)] replica_access:Vec<Access>}
+   #[derive(Deserialize)]#[serde(deny_unknown_fields)]struct Input{connection:Connection,access:Access,#[serde(default)] replica_access:Vec<Access>,#[serde(default)] metadata_key:Option<String>}
    let i:Input=serde_json::from_value(v).map_err(anyhow::Error::from)?;
-   anyhow::ensure!(i.connection.version==1&&i.connection.replicas.len()<=50,"invalid connection");
-   if let Some(allowed)=&app.allowed{anyhow::ensure!(i.connection.primary==allowed.primary&&i.connection.community==allowed.community&&i.connection.branch_pin==allowed.branch_pin&&i.connection.checkpoint==allowed.checkpoint&&i.connection.replicas.iter().all(|r|allowed.replicas.contains(r)),"operator has not approved this backend");}
+   anyhow::ensure!(i.connection.version==2&&i.connection.replicas.len()<=50,"invalid connection");
+   if let Some(allowed)=&app.allowed{anyhow::ensure!(i.connection.primary==allowed.primary&&i.connection.community==allowed.community&&i.connection.branch_pin==allowed.branch_pin&&(i.connection.checkpoint.is_empty()||hex_id(&i.connection.checkpoint))&&i.connection.replicas.iter().all(|r|allowed.replicas.contains(r)),"operator has not approved this backend");}
    let remote=Remote::new(i.connection.primary.clone(),i.access,app.testing)?;
    s.replicas=i.connection.replicas.iter().map(|b|{let id=b.id()?;let access=i.replica_access.iter().find(|a|a.backend==id).cloned().unwrap_or(Access{backend:id,..Default::default()});Remote::new(b.clone(),access,app.testing)}).collect::<anyhow::Result<Vec<_>>>()?;
-   app.admissions.lock().await.remove(&hash(&key));s.connection=Some(i.connection);s.remote=Some(remote);s.copied_head=None;s.data=None;s.authenticated=false;s.device=None;s.plan=None;s.refresh().await?;json!({"connected":true})
+   app.admissions.lock().await.remove(&hash(&key));s.connection=Some(i.connection);s.remote=Some(remote);s.copied_head=None;s.data=None;s.metadata=i.metadata_key.as_deref().map(MetadataKey::from_base64).transpose()?;s.metadata_history=vec![];s.head_grants.clear();s.locked=false;s.authenticated=false;s.device=None;s.plan=None;s.refresh().await?;json!({"connected":true})
   },
   "status"=>{if s.remote.is_some(){s.refresh().await?;}
-   if let Some(d)=&s.data{json!({"mode":"portable","connected":true,"configured":true,"community":d.community(),"branch":d.branch(),"genesis":d.archive.genesis,"publisher":s.connection.as_ref().unwrap().primary.id()?,"providers":[],"read_only":false})}else{json!({"mode":"portable","connected":s.remote.is_some(),"configured":false,"publisher":s.connection.as_ref().map(|c|c.primary.id()).transpose()?,"providers":[],"read_only":false})}},
+   if let Some(d)=&s.data{json!({"mode":"portable","connected":true,"configured":true,"locked":false,"writable":s.remote.as_ref().is_some_and(Remote::writable),"community":d.community(),"branch":d.branch(),"genesis":d.archive.genesis,"publisher":s.connection.as_ref().unwrap().primary.id()?,"providers":[],"read_only":(s.authenticated&&s.active().is_err())||s.remote.as_ref().is_none_or(|r|r.backend.id().ok()!=s.connection.as_ref().and_then(|c|c.primary.id().ok()))})}else{json!({"mode":"portable","connected":s.remote.is_some(),"configured":s.locked,"locked":s.locked,"writable":s.remote.as_ref().is_some_and(Remote::writable),"publisher":s.connection.as_ref().map(|c|c.primary.id()).transpose()?,"providers":[],"read_only":false})}},
   "connection"=>serde_json::to_value(&s.connection).map_err(anyhow::Error::from)?,
   "challenge"=>{let device:Device=serde_json::from_value(v["device"].clone()).map_err(anyhow::Error::from)?;device.validate()?;let challenge=serde_json::to_string(&json!(["nightbuoy-login",1,token(),device.id])).unwrap();s.device=Some(device);s.authenticated=false;s.plan=None;s.challenge=Some(challenge.clone());json!({"id":"session","body":challenge})},
   "login"=>{let signed:Signed=serde_json::from_value(v["signed"].clone()).map_err(anyhow::Error::from)?;let challenge=s.challenge.take().ok_or_else(||anyhow::anyhow!("challenge required"))?;anyhow::ensure!(signed.body==challenge,"challenge mismatch");verify_member(&s.device.as_ref().unwrap().sign,&signed.body,&signed.signature)?;s.authenticated=true;
    if s.active().is_ok(){let identity=format!("{}:{}",s.data.as_ref().unwrap().community(),s.device.as_ref().unwrap().id);let mut admissions=app.admissions.lock().await;admissions.retain(|_,(_,t)|t.elapsed()<Duration::from_secs(8*3600));let session_key=hash(&key);if !admission_available(&admissions,&session_key,&identity){s.authenticated=false;anyhow::bail!("this member already has two active sessions; sign out another tab first");}admissions.insert(session_key,(identity,Instant::now()));}
    json!({"ok":true})},
-  "logout"=>{app.admissions.lock().await.remove(&hash(&key));s.authenticated=false;s.device=None;s.challenge=None;s.plan=None;json!({"ok":true})},
-  "me"=>{anyhow::ensure!(s.authenticated,"sign in required");s.refresh().await?;json!({"member":s.data.as_ref().and_then(|d|d.view().members.get(&s.device.as_ref().unwrap().id))})},
-  "sync"=>{s.refresh().await?;s.active()?;serde_json::to_value(&s.data.as_ref().unwrap().archive).map_err(anyhow::Error::from)?},
-  "join"=>{anyhow::ensure!(s.authenticated,"sign in required");let signed:Signed=serde_json::from_value(v["signed"].clone()).map_err(anyhow::Error::from)?;let device=s.device.as_ref().unwrap();let community=s.data.as_ref().map(Data::community).unwrap_or_default();anyhow::ensure!(signed.body==serde_json::to_string(&json!(["nightbuoy-join",1,community,device]))?,"invalid membership request");verify_member(&device.sign,&signed.body,&signed.signature)?;json!({"request":{"device":device,"signed":signed,"community":community},"export_required":true})},
+  "logout"=>{app.admissions.lock().await.remove(&hash(&key));s.authenticated=false;s.device=None;s.challenge=None;s.plan=None;s.metadata=None;s.metadata_history.clear();s.data=None;s.head_grants.clear();s.locked=true;json!({"ok":true})},
+  "me"=>{anyhow::ensure!(s.authenticated,"sign in required");s.refresh().await?;json!({"member":s.data.as_ref().and_then(|d|d.view().members.get(&s.device.as_ref().unwrap().id)),"read_access":s.metadata.is_some()&&s.data.is_some()})},
+  "sync"=>{s.refresh().await?;anyhow::ensure!(s.authenticated&&s.metadata.is_some()&&s.data.is_some(),"sign in and unlock forum access required");serde_json::to_value(&s.data.as_ref().unwrap().archive).map_err(anyhow::Error::from)?},
+  "join"=>{anyhow::ensure!(s.authenticated,"sign in required");let signed:Signed=serde_json::from_value(v["signed"].clone())?;let device=s.device.as_ref().unwrap();let expected=if let Some(data)=&s.data{json!(["nightbuoy-join",1,data.community(),device])}else{json!(["nightbuoy-join",2,s.connection.as_ref().unwrap().primary.id()?,device])};anyhow::ensure!(signed.body==serde_json::to_string(&expected)?,"invalid membership request");verify_member(&device.sign,&signed.body,&signed.signature)?;json!({"request":{"device":device,"signed":signed},"export_required":true})},
   "requests"=>{s.active()?;json!(s.requests)},
-  "request-import"=>{anyhow::ensure!(s.active()?.role=="administrator","administrator required");let device:Device=serde_json::from_value(v["device"].clone()).map_err(anyhow::Error::from)?;device.validate()?;let signed:Signed=serde_json::from_value(v["signed"].clone()).map_err(anyhow::Error::from)?;let expected=serde_json::to_string(&json!(["nightbuoy-join",1,s.data.as_ref().unwrap().community(),device])).unwrap();anyhow::ensure!(signed.body==expected,"request community mismatch");verify_member(&device.sign,&signed.body,&signed.signature)?;anyhow::ensure!(s.requests.len()<100,"request limit");s.requests.push(json!({"device":device,"signed":signed,"verified":false}));json!({"ok":true})},
+  "request-import"=>{anyhow::ensure!(s.active()?.role=="administrator","administrator required");let device:Device=serde_json::from_value(v["device"].clone())?;device.validate()?;let signed:Signed=serde_json::from_value(v["signed"].clone())?;let expected=serde_json::to_string(&json!(["nightbuoy-join",1,s.data.as_ref().unwrap().community(),device]))?;let opaque_target=serde_json::to_string(&json!(["nightbuoy-join",2,s.connection.as_ref().unwrap().primary.id()?,device]))?;anyhow::ensure!(signed.body==expected||signed.body==opaque_target,"request targets another forum");verify_member(&device.sign,&signed.body,&signed.signature)?;anyhow::ensure!(s.requests.len()<100,"request limit");s.requests.push(json!({"device":device,"signed":signed,"verified":false}));json!({"ok":true})},
   "prepare"|"recover-prepare"=>{
-   anyhow::ensure!(s.authenticated,"sign in required");let parent=s.refresh_source(false).await?;
+   anyhow::ensure!(s.authenticated,"sign in required");if s.metadata.is_none(){s.metadata=v["metadata_key"].as_str().map(MetadataKey::from_base64).transpose()?;}let parent=s.refresh_source(false).await?;anyhow::ensure!(s.remote.as_ref().unwrap().writable(),"Provider write permission required. Add your scoped storage credential.");anyhow::ensure!(s.remote.as_ref().unwrap().backend.id()?==s.connection.as_ref().unwrap().primary.id()?,"This root is a read-only encrypted copy; connect to the active write backend or explicitly recover to a new branch.");
    let signed:Signed=serde_json::from_value(v["signed"].clone()).map_err(anyhow::Error::from)?;let primary=s.connection.as_ref().unwrap().primary.id()?;
    let item=match v["kind"].as_str(){Some("genesis")=>{anyhow::ensure!(app.allowed.is_none(),"create communities using a personal local client");protocol::Item::Genesis(signed)},Some("control")=>protocol::Item::Control(signed),Some("event")=>protocol::Item::Event(Record{event:signed,publisher:primary.clone(),receipt:String::new()}),_=>anyhow::bail!("invalid transaction type")};
    anyhow::ensure!(item.actor()?==s.device.as_ref().unwrap().id,"transaction author mismatch");verify_member(&s.device.as_ref().unwrap().sign,&item.signed().body,&item.signed().signature)?;
-   if s.data.as_ref().is_some_and(|d|d.archive.order.contains(&item.signed().hash())){json!({"accepted":true})}else{
-    let mut data=if path=="recover-prepare" {
+   if s.data.as_ref().is_some_and(|d|d.archive.order.contains(&item.signed().hash())||d.community()==item.signed().hash()){json!({"accepted":true})}else{
+    let old_epoch=s.data.as_ref().map(|d|d.view().epoch);let mut data=if path=="recover-prepare" {
      anyhow::ensure!(s.data.is_none()&&parent.is_none(),"recovery requires a new empty backend namespace");
      let a:Archive=serde_json::from_value(v["archive"].clone())?;let old=Data::replay(&a)?;let fields:Value=serde_json::from_str(&item.signed().body)?;
      anyhow::ensure!(matches!(item,protocol::Item::Control(_))&&fields[6]=="reconstitute","explicit branch reset required");
@@ -428,33 +685,34 @@ async fn endpoint(
     let mut cert=if let Some(old)=&data {if let Some(p)=&old.archive.portable_proof{p.clone()}else{protocol::Certificate{anchor:Some(Box::new(old.archive.clone())),headers:vec![]}}}else{protocol::Certificate::default()};let sequence=data.as_ref().map(|d|d.archive.order.len()+1).unwrap_or(0);item.apply(&mut data)?;let mut data=data.unwrap();
     anyhow::ensure!(data.view().policy.portable.as_ref().is_some_and(|p|p.primary==primary),"portable backend mismatch");
     let previous=if let Some(h)=cert.headers.last(){protocol::digest(h)?}else if let Some(a)=&cert.anchor{protocol::digest(&json!({"kind":"legacy_anchor","data":a}))?}else{String::new()};let body=protocol::header_body(&data,&item,&previous,sequence)?;
-    data.archive.portable_proof=Some(std::mem::take(&mut cert));let ticket=token();s.plan=Some(Plan{ticket:ticket.clone(),body:body.clone(),data,item,parent});json!({"ticket":ticket,"body":body})
+    data.archive.portable_proof=Some(std::mem::take(&mut cert));
+    let metadata=if old_epoch==Some(data.view().epoch){s.metadata.clone().ok_or_else(||anyhow::anyhow!("unlock metadata first"))?}else{MetadataKey::from_base64(v["metadata_key"].as_str().unwrap_or(""))?};
+    let wrapped:std::collections::BTreeMap<String,String>=serde_json::from_value(v["metadata_wrapped"].clone())?;validate_wrapped(&data,&wrapped)?;
+    let ephemeral=v["metadata_ephemeral"].as_str().ok_or_else(||anyhow::anyhow!("anonymous discovery envelope required"))?.to_string();
+    anyhow::ensure!(data.view().discovery.as_ref().is_some_and(|d|d.ephemeral==ephemeral),"unsigned discovery point replacement forbidden");
+    let ticket=token();s.plan=Some(Plan{ticket:ticket.clone(),body:body.clone(),data,item,parent,metadata,wrapped});json!({"ticket":ticket,"body":body})
    }
   },
   "commit"=>{
    anyhow::ensure!(s.authenticated,"sign in required");let plan=s.plan.as_ref().ok_or_else(||anyhow::anyhow!("prepare required"))?;anyhow::ensure!(v["ticket"]==plan.ticket,"invalid write ticket");
    let header:Signed=serde_json::from_value(v["header"].clone()).map_err(anyhow::Error::from)?;anyhow::ensure!(header.body==plan.body,"append context changed");verify_member(&s.device.as_ref().unwrap().sign,&header.body,&header.signature)?;
    let mut data=plan.data.clone();data.archive.portable_proof.as_mut().unwrap().headers.push(header.clone());protocol::verify(&data)?;
-   let remote=s.remote.as_ref().unwrap();let item_bytes=protocol::canonical(&plan.item)?;remote.immutable(&format!("objects/{}.json",hash(&item_bytes)),item_bytes).await?;
-   let hb=protocol::canonical(&header)?;remote.immutable(&format!("objects/{}.json",hash(&hb)),hb).await?;
-   let snapshot=protocol::canonical(&data.archive)?;let snapshot_id=hash(&snapshot);remote.immutable(&format!("objects/{snapshot_id}.json"),snapshot).await?;
-   let head=Head{version:1,community:data.community(),branch:data.branch(),head:protocol::head(&data.archive)?,snapshot:snapshot_id};
-   remote.put("head.json",protocol::canonical(&head)?,plan.parent.as_ref()).await?;
-   s.data=Some(data);s.plan=None;s.refresh().await?;json!({"confirmed":true})
+   let remote=s.remote.as_ref().unwrap();publish_opaque(remote,&plan.metadata,&data,&s.connection.as_ref().unwrap().primary,plan.parent.as_ref(),Some(&plan.item)).await?;
+   let metadata=plan.metadata.clone();let wrapped=plan.wrapped.clone();if let Some(old)=s.metadata.replace(metadata){s.remember_metadata(old);}s.head_grants=wrapped;s.data=Some(data);s.plan=None;s.refresh().await?;json!({"confirmed":true})
   },
+  "export"=>{s.refresh().await?;s.active()?;let data=s.data.as_ref().unwrap();let d=data.view().discovery.as_ref().ok_or_else(||anyhow::anyhow!("signed discovery grants required"))?;let bytes=opaque::head_frame(s.metadata.as_ref().unwrap(),&d.wrapped.values().cloned().collect::<Vec<_>>(),&d.ephemeral,&data.archive,&opaque::context("","private-archive"))?;json!({"frame":b64(bytes)})},
   "replication"=>{s.active()?;json!({"copied":s.data.as_ref().and_then(|d|protocol::head(&d.archive).ok()).is_some_and(|h|s.copied_head.as_ref()==Some(&h)),"remote":true,"from_replica":s.from_replica,"error":if s.source_warning{Some("A configured source is unavailable, invalid, stale or conflicting. Reading a verified compatible copy; write authority has not changed.")}else{None}})},
   "replica-copy"=>{
    s.refresh().await?;s.active()?;
-   #[derive(Deserialize)]#[serde(deny_unknown_fields)]struct Input{backend:Backend,access:Access}
+   #[derive(Deserialize)]#[serde(deny_unknown_fields)]struct Input{backend:Backend,access:Access,#[serde(default)]metadata_keys:Vec<String>}
    let i:Input=serde_json::from_value(v)?;if let Some(allowed)=&app.allowed{anyhow::ensure!(allowed.replicas.contains(&i.backend),"operator has not approved this backend");}
-   anyhow::ensure!(s.replicas.len()<50,"replica limit");let remote=Remote::new(i.backend.clone(),i.access,app.testing)?;let old=load(&remote).await?;
+   anyhow::ensure!(s.replicas.len()<50,"replica limit");let remote=Remote::new(i.backend.clone(),i.access,app.testing)?;let key=s.metadata.as_ref().ok_or_else(||anyhow::anyhow!("unlock metadata first"))?;let mut old_result=load(&remote,key).await;
+   if old_result.is_err(){for previous in &s.metadata_history{if let Ok(old)=load(&remote,previous).await{old_result=Ok(old);break;}}}
+   if old_result.is_err(){anyhow::ensure!(i.metadata_keys.len()<=4096,"too many historical metadata keys");for previous in &i.metadata_keys{let previous=MetadataKey::from_base64(previous)?;if let Ok(old)=load(&remote,&previous).await{old_result=Ok(old);break;}}}let old=old_result?;
    let data=s.data.as_ref().unwrap();if let Some((_,d,_))=&old{d.catch_up(&data.archive)?;let previous=protocol::head(&d.archive)?;anyhow::ensure!(data.archive.portable_proof.as_ref().unwrap().headers.iter().any(|h|protocol::digest(h).ok().as_ref()==Some(&previous)),"replica head fork");}
-   for item in protocol::items(&data.archive)?{let bytes=protocol::canonical(&item)?;remote.immutable(&format!("objects/{}.json",hash(&bytes)),bytes).await?;}
-   for h in &data.archive.portable_proof.as_ref().unwrap().headers{let bytes=protocol::canonical(h)?;remote.immutable(&format!("objects/{}.json",hash(&bytes)),bytes).await?;}
-   let bytes=protocol::canonical(&data.archive)?;let snapshot=hash(&bytes);remote.immutable(&format!("objects/{snapshot}.json"),bytes).await?;
-   let h=Head{version:1,community:data.community(),branch:data.branch(),head:protocol::head(&data.archive)?,snapshot};remote.put("head.json",protocol::canonical(&h)?,old.as_ref().map(|(b,_,_)|b)).await?;
-   let (_,read,_)=load(&remote).await?.ok_or_else(||anyhow::anyhow!("replica readback missing"))?;anyhow::ensure!(protocol::head(&read.archive)?==h.head,"replica readback changed");
-   let c=s.connection.as_mut().unwrap();if !c.replicas.contains(&i.backend){c.replicas.push(i.backend);}s.replicas.retain(|r|r.backend!=remote.backend);s.replicas.push(remote);s.copied_head=Some(h.head);json!({"copied":true})
+   publish_opaque(&remote,key,data,&s.connection.as_ref().unwrap().primary,old.as_ref().map(|(b,_,_)|b),None).await?;
+   let copied=protocol::head(&data.archive)?;
+   let c=s.connection.as_mut().unwrap();if !c.replicas.contains(&i.backend){c.replicas.push(i.backend);}s.replicas.retain(|r|r.backend!=remote.backend);s.replicas.push(remote);s.copied_head=Some(copied);json!({"copied":true})
   },
   _=>anyhow::bail!("unsupported portable operation"),
  };Ok(Json(out))
@@ -522,11 +780,17 @@ pub fn router(app: App) -> Router {
         router.fallback(asset)
     };
     router
-        .layer(DefaultBodyLimit::max(MAX_ARCHIVE_BYTES))
+        .layer(DefaultBodyLimit::max(opaque::MAX_FRAME * 2))
         .layer(middleware::from_fn_with_state(app.clone(), security))
         .with_state(app)
 }
 pub async fn run() -> anyhow::Result<()> {
+    run_mode(false).await
+}
+pub async fn run_gui() -> anyhow::Result<()> {
+    run_mode(true).await
+}
+async fn run_mode(open_gui: bool) -> anyhow::Result<()> {
     let listen: std::net::SocketAddr = std::env::var("NIGHTBUOY_LISTEN")
         .unwrap_or("127.0.0.1:8080".into())
         .parse()?;
@@ -543,7 +807,7 @@ pub async fn run() -> anyhow::Result<()> {
         .transpose()?;
     if let Some(c) = &allowed {
         anyhow::ensure!(
-            c.version == 1
+            c.version == 2
                 && c.replicas.len() <= 50
                 && hex_id(&c.community)
                 && hex_id(&c.branch_pin)
@@ -596,11 +860,38 @@ pub async fn run() -> anyhow::Result<()> {
     eprintln!(
         "NightBuoy portable client: {origin} (RAM-only companion; durable data on selected backends)"
     );
+    if open_gui
+        && personal
+        && let Err(error) = open_browser(&origin)
+    {
+        eprintln!("Could not open a browser ({error}); open {origin} manually.");
+    }
     axum::serve(listener, router(app))
         .with_graceful_shutdown(async {
             let _ = tokio::signal::ctrl_c().await;
         })
         .await?;
+    Ok(())
+}
+
+fn open_browser(origin: &str) -> std::io::Result<()> {
+    // No shell interpolation. The validated local origin is a single process argument.
+    #[cfg(target_os = "macos")]
+    let mut command = std::process::Command::new("open");
+    #[cfg(target_os = "windows")]
+    let mut command = {
+        let mut c = std::process::Command::new("rundll32.exe");
+        c.arg("url.dll,FileProtocolHandler");
+        c
+    };
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    let mut command = std::process::Command::new("xdg-open");
+    command
+        .arg(origin)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()?;
     Ok(())
 }
 
@@ -639,6 +930,12 @@ mod tests {
             copied_head: None,
             source_warning: false,
             data: None,
+            metadata: None,
+            metadata_history: vec![],
+            locked: false,
+            head_grants: Default::default(),
+            head_ephemeral: String::new(),
+            operator_checkpoint: None,
             device: None,
             challenge: None,
             authenticated: false,

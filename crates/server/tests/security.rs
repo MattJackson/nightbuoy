@@ -20,6 +20,7 @@ fn device(n: u8) -> (SigningKey, Device) {
         id: hash(decode(&sign).unwrap()),
         sign,
         wrap: json!({"kty":"RSA","e":"AQAB","n":"A".repeat(512)}),
+        discover: None,
     };
     (key, dev)
 }

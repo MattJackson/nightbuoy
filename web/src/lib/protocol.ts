@@ -1,8 +1,9 @@
 import initProof,{verify_consensus} from '../generated-proof/nightbuoy_proof.js';
 import {hash,verify,bytes,un64,canonical,type Signed,type Device} from './crypto.ts';
-export type Policy={name:string;admission:'automatic'|'approval';history:boolean;identity:'forge'|'key';skin:string;consensus?:any;portable?:{version:number;primary:string}};
+export type Policy={name:string;admission:'automatic'|'approval';history:boolean;identity:'forge'|'key';skin:string;consensus?:any;portable?:{version:number;primary:string;discovery?:Discovery}};
+export type Discovery={ephemeral:string;wrapped:Record<string,string>};
 export type Member={device:Device;role:string;status:string;floor:number};
-export type View={policy:Policy;epoch:number;members:Record<string,Member>;grants:Record<string,Record<string,string>>;publishers:string[]};
+export type View={policy:Policy;epoch:number;members:Record<string,Member>;grants:Record<string,Record<string,string>>;publishers:string[];discovery?:Discovery};
 export type Published={event:Signed;publisher:string;receipt:string};
 export type Archive={genesis:Signed;controls:Signed[];records:Published[];order:string[];proof?:any;portable_proof?:{anchor?:Archive;headers:Signed[]}};
 export type Verified={checkpoint:string;community:string;tip:string;authority:string;view:View;views:Record<string,View>;archive:Archive;events:Event[]};
@@ -10,7 +11,8 @@ export type Event={hash:string;author:string;control:string;epoch:number;kind:st
 function fail(s:string):never{throw Error(s);}
 function array(s:Signed,n:number):any[]{const v=JSON.parse(s.body);if(!Array.isArray(v)||v.length!==n||canonical(v)!==s.body)fail('Invalid protocol encoding.');return v;}
 function checkPolicy(p:Policy){if(p.portable&&(p.portable.version!==1||un64(p.portable.primary).length!==32||p.consensus||p.identity!=='key'))fail('Invalid portable ordering.');if(!['automatic','approval'].includes(p.admission)||!['forge','key'].includes(p.identity)||(typeof p.skin!=='string'||!/^[-a-z0-9]{1,40}$/.test(p.skin))||!p.name||p.name.length>80)fail('Invalid community policy.');}
-async function device(d:Device){if(await hash(un64(d.sign))!==d.id||d.wrap.kty!=='RSA'||d.wrap.e!=='AQAB'||d.wrap.n?.length!==512||d.wrap.d)fail('Invalid member public keys.');}
+async function device(d:Device){if(d.discover)await crypto.subtle.importKey('raw',un64(d.discover),{name:'ECDH',namedCurve:'P-256'},false,[]);if(await hash(un64(d.sign))!==d.id||d.wrap.kty!=='RSA'||d.wrap.e!=='AQAB'||d.wrap.n?.length!==512||d.wrap.d)fail('Invalid member public keys.');}
+async function discovery(v:View,d:Discovery){if(un64(d.ephemeral).length!==65)fail('Invalid anonymous discovery point.');await crypto.subtle.importKey('raw',un64(d.ephemeral),{name:'ECDH',namedCurve:'P-256'},false,[]);const active=Object.keys(v.members).filter(id=>v.members[id].status==='active').sort();if(canonical(Object.keys(d.wrapped).sort())!==canonical(active)||Object.values(d.wrapped).some(g=>un64(g).length!==60))fail('Invalid signed discovery recipients.');}
 function grants(v:View,list:any[]){if(!Array.isArray(list)||list.length>4000)fail('Invalid key grants.');for(const g of list){const m=v.members[g.member];if(!m||m.status!=='active'||g.epoch<m.floor||g.epoch>v.epoch||un64(g.key).length!==384)fail('Invalid key recipient.');v.grants[g.epoch]??={};if(v.grants[g.epoch][g.member]&&v.grants[g.epoch][g.member]!==g.key)fail('Key grant changed.');v.grants[g.epoch][g.member]=g.key;}}
 function allKeys(v:View){for(const m of Object.values(v.members))if(m.status==='active'&&!v.grants[v.epoch]?.[m.device.id])fail('Incomplete key rotation.');}
 function hasAdmin(v:View){if(!Object.values(v.members).some(m=>m.status==='active'&&m.role==='administrator'))fail('No surviving administrator.');}
@@ -29,7 +31,7 @@ export async function verifyArchive(archive:Archive,pin?:{community:string;tip:s
  }
  const g=array(archive.genesis,6);if(g[0]!=='nightbuoy-genesis'||g[1]!==1)fail('Unsupported community.');await device(g[2]);if(!await verify(g[2].sign,archive.genesis))fail('Invalid genesis signature.');checkPolicy(g[3]);
  const community=await hash(archive.genesis.body);if(pin?.community&&pin.community!==community)fail('Community fingerprint changed. Refusing to unlock.');
- let tip=community,authority=community;let view:View={policy:g[3],epoch:1,members:{[g[2].id]:{device:g[2],role:'administrator',status:'active',floor:1}},grants:{},publishers:[g[4]]};grants(view,g[5]);allKeys(view);
+ let tip=community,authority=community;let view:View={policy:g[3],epoch:1,members:{[g[2].id]:{device:g[2],role:'administrator',status:'active',floor:1}},grants:{},publishers:[g[4]],...(g[3].portable?.discovery?{discovery:g[3].portable.discovery}:{})};grants(view,g[5]);allKeys(view);if(view.discovery)await discovery(view,view.discovery);
  if(view.policy.portable&&g[4]!==view.policy.portable.primary)fail('Genesis backend mismatch.');let branch=community;await append({kind:'genesis',data:archive.genesis},g[2].sign,view,branch);
  const views:Record<string,View>={[tip]:view};const events:Event[]=[];const byHash=new Map<string,Event>();
  const controls=new Map<string,Signed>(),records=new Map<string,Published>();
@@ -58,7 +60,7 @@ export async function verifyArchive(archive:Archive,pin?:{community:string;tip:s
    else if(op==='role'){const m=view.members[p.member];if(!m||m.status!=='active'||!['member','moderator','administrator'].includes(p.role))fail('Invalid role change.');m.role=p.role;hasAdmin(view);}
    else if(op==='rotate'||op==='revoke'){if(op==='revoke'){const m=view.members[p.member];if(!m||m.status!=='active')fail('Invalid revocation.');m.status='revoked';hasAdmin(view);}if(p.epoch!==view.epoch+1)fail('Invalid epoch.');view.epoch=p.epoch;grants(view,p.grants);allKeys(view);}
    else if(op==='publisher'){if(un64(p.key).length!==32)fail('Invalid publication key.');view.publishers=view.publishers.filter(k=>k!==p.key);if(p.approved)view.publishers.push(p.key);}
-   else fail('Unsupported governance change.');authority=id;prefixControls.push(c);await append({kind:'control',data:c},actor.device.sign,view,branch);
+   else fail('Unsupported governance change.');if(['admit','revoke','rotate','reconstitute'].includes(op)){if(p.discovery){await discovery(view,p.discovery);view.discovery=p.discovery;}else if(view.discovery)fail('Signed discovery grants required.');}else if(p.discovery)fail('Unsigned discovery transition.');authority=id;prefixControls.push(c);await append({kind:'control',data:c},actor.device.sign,view,branch);
   }else{
    const r=records.get(id);if(!r)fail('Missing chain block.');const a=array(r.event,12);if(a[0]!==1||a[1]!==community||a[3]!==authority)fail('History diverged or has missing blocks. No merge is possible.');const m=view.members[a[2]];if(!m||m.status!=='active'||!await verify(m.device.sign,r.event))fail('Invalid member event signature.');
    if(!view.publishers.includes(r.publisher))fail('Unapproved publisher.');if(view.policy.portable){if(r.publisher!==view.policy.portable.primary||r.receipt!=='')fail('Wrong write backend.');}else{const pub=await crypto.subtle.importKey('raw',un64(r.publisher),'Ed25519',false,['verify']);if(!await crypto.subtle.verify('Ed25519',pub,un64(r.receipt),bytes(JSON.stringify(['nightbuoy-publication',1,community,id]))))fail('Invalid publication receipt.');}

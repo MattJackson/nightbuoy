@@ -1,5 +1,5 @@
 //! Private transport profiles. No credentials are serialized into public connections.
-use crate::{crypto::*, model::MAX_ARCHIVE_BYTES, portable_protocol::canonical};
+use crate::{crypto::*, portable_protocol::canonical, sealed_storage::MAX_FRAME};
 use futures::StreamExt;
 use object_store::{ObjectStore, ObjectStoreExt, PutMode, PutOptions, UpdateVersion};
 use serde::{Deserialize, Serialize};
@@ -90,7 +90,12 @@ impl Backend {
             !onion || std::env::var("NIGHTBUOY_SOCKS_PROXY").is_ok(),
             "Tor proxy required"
         );
-        anyhow::ensure!(safe(&self.namespace), "invalid namespace");
+        anyhow::ensure!(
+            !self.namespace.is_empty()
+                && self.namespace.len() <= 512
+                && self.namespace.split('/').all(safe),
+            "invalid namespace"
+        );
         if self.kind != "s3" {
             for v in [&self.owner, &self.repository, &self.branch] {
                 anyhow::ensure!(safe(v), "invalid repository coordinates");
@@ -139,6 +144,29 @@ impl Remote {
             client: b.build()?,
             testing,
         })
+    }
+    /// Adopt a signed storage identity only when every transport coordinate is identical.
+    /// A descriptor from encrypted data may never redirect credentials to another destination.
+    pub fn rebind_same_location(&self, backend: &Backend) -> anyhow::Result<Option<Self>> {
+        let mut old = self.backend.clone();
+        old.salt = backend.salt.clone();
+        if &old != backend {
+            return Ok(None);
+        }
+        Self::new(
+            backend.clone(),
+            Access {
+                backend: backend.id()?,
+                ..self.access.clone()
+            },
+            self.testing,
+        )
+        .map(Some)
+    }
+    pub async fn confirm_bucket(&self) -> anyhow::Result<()> {
+        let prefix = object_store::path::Path::from(self.backend.namespace.as_str());
+        self.s3()?.list_with_delimiter(Some(&prefix)).await.map_err(|_|anyhow::anyhow!("Cannot confirm this bucket exists and is readable. Check the bucket and permissions; this is not a confirmed empty forum."))?;
+        Ok(())
     }
     fn path(&self, key: &str) -> anyhow::Result<String> {
         anyhow::ensure!(key.split('/').all(safe), "invalid object path");
@@ -191,6 +219,60 @@ impl Remote {
         )?)
         .build()?)
     }
+    pub async fn probe_repository(&self) -> anyhow::Result<String> {
+        if self.backend.kind == "s3" {
+            return Ok(self.backend.branch.clone());
+        }
+        let b = &self.backend;
+        let prefix = if b.kind == "forgejo" { "/api/v1" } else { "" };
+        let url = format!(
+            "{}{prefix}/repos/{}/{}",
+            b.endpoint.trim_end_matches('/'),
+            b.owner,
+            b.repository
+        );
+        let response = self.auth(self.client.get(url)).send().await?;
+        anyhow::ensure!(
+            response.status() != 404,
+            "Repository not found or private. Add your repository-scoped provider token; this is not an empty forum."
+        );
+        anyhow::ensure!(
+            response.status() != 401 && response.status() != 403,
+            "Storage provider denied access. Check the token permissions or rate limit."
+        );
+        let metadata: Value = serde_json::from_slice(&bounded(response).await?)?;
+        Ok(metadata["default_branch"]
+            .as_str()
+            .unwrap_or("main")
+            .to_string())
+    }
+    pub async fn probe_branch(&self) -> anyhow::Result<()> {
+        if self.backend.kind == "s3" {
+            return Ok(());
+        }
+        let b = &self.backend;
+        let prefix = if b.kind == "forgejo" { "/api/v1" } else { "" };
+        let url = format!(
+            "{}{prefix}/repos/{}/{}/branches/{}",
+            b.endpoint.trim_end_matches('/'),
+            b.owner,
+            b.repository,
+            b.branch
+        );
+        let response = self.auth(self.client.get(url)).send().await?;
+        anyhow::ensure!(
+            response.status().is_success(),
+            "Repository branch is missing or inaccessible; this is not an empty forum."
+        );
+        Ok(())
+    }
+    pub fn writable(&self) -> bool {
+        if self.backend.kind == "s3" {
+            !self.access.access_key.is_empty() && !self.access.secret_key.is_empty()
+        } else {
+            !self.access.token.is_empty()
+        }
+    }
     pub async fn get(&self, key: &str) -> anyhow::Result<Option<Blob>> {
         let p = self.path(key)?;
         if self.backend.kind == "s3" {
@@ -199,7 +281,7 @@ impl Remote {
                 Err(object_store::Error::NotFound { .. }) => return Ok(None),
                 Err(e) => return Err(e.into()),
             };
-            anyhow::ensure!(r.meta.size <= MAX_ARCHIVE_BYTES as u64, "object too large");
+            anyhow::ensure!(r.meta.size <= MAX_FRAME as u64, "object too large");
             let version = r
                 .meta
                 .e_tag
@@ -210,10 +292,7 @@ impl Remote {
             let mut bytes = vec![];
             while let Some(b) = stream.next().await {
                 let b = b?;
-                anyhow::ensure!(
-                    bytes.len() + b.len() <= MAX_ARCHIVE_BYTES,
-                    "object too large"
-                );
+                anyhow::ensure!(bytes.len() + b.len() <= MAX_FRAME, "object too large");
                 bytes.extend(b);
             }
             return Ok(Some(Blob {
@@ -248,7 +327,7 @@ impl Remote {
             )
             .await?
         };
-        anyhow::ensure!(bytes.len() <= MAX_ARCHIVE_BYTES, "object too large");
+        anyhow::ensure!(bytes.len() <= MAX_FRAME, "object too large");
         Ok(Some(Blob {
             bytes,
             version,
@@ -261,7 +340,7 @@ impl Remote {
         bytes: Vec<u8>,
         expected: Option<&Blob>,
     ) -> anyhow::Result<()> {
-        anyhow::ensure!(bytes.len() <= MAX_ARCHIVE_BYTES, "object too large");
+        anyhow::ensure!(bytes.len() <= MAX_FRAME, "object too large");
         let p = self.path(key)?;
         if self.backend.kind == "s3" {
             anyhow::ensure!(
@@ -338,7 +417,7 @@ async fn bounded(mut r: reqwest::Response) -> anyhow::Result<Vec<u8>> {
     let mut out = vec![];
     while let Some(b) = r.chunk().await? {
         anyhow::ensure!(
-            out.len() + b.len() <= MAX_ARCHIVE_BYTES * 2,
+            out.len() + b.len() <= MAX_FRAME * 2,
             "backend response too large"
         );
         out.extend(b);

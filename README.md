@@ -5,7 +5,7 @@
 
 # NightBuoy
 
-A portable encrypted forum. Run a temporary local client, import your identity and forum connection, and retrieve verified encrypted history from remote backends. Every frontend can be stopped while the forum data remains on its backends. The same client can stay online for convenience.
+A portable encrypted forum. Run a temporary local client, point it at a storage URL, unlock your identity or private forum key, and retrieve verified encrypted history from remote backends. Every frontend can be stopped while the forum data remains on its backends. The same client can stay online for convenience.
 
 **Status: development software under adversarial review.** No absolute anonymity, Byzantine finality or professional security certification is claimed. [ARCHITECTURE.md](ARCHITECTURE.md) is the master design; [docs/AUDIT.md](docs/AUDIT.md) records findings, fixes and validation limits.
 
@@ -21,9 +21,9 @@ npm run dev:up
 
 Open **http://localhost:8080**. This is a loopback-only local interface; remote connections require HTTPS or Tor. There is no local setup token, SQLite database, validator network or required data volume in portable mode.
 
-Choose an existing GitHub/Forgejo repository branch or S3-compatible bucket and an empty namespace. Enter your own scoped provider access, review the exact destination and create the community. Save both downloaded files: your encrypted identity recovery file and the credential-free forum connection. The provider stores encrypted transactions, member-signed append certificates, verified archive snapshots and a conditionally updated head. A repository/bucket must already exist; NightBuoy does not provision provider accounts or permissions.
+Enter a GitHub/Forgejo repository URL or an S3-compatible root, optionally enter a private forum access key, then choose Join. NightBuoy infers the provider settings and asks for your scoped provider credentials when needed. It asks before creating a forum in a confirmed-empty location. The repository branch or bucket must already exist. Save your encrypted identity recovery file; connection exports are optional advanced backups. Backend transactions, membership/governance metadata, append certificates, snapshots and heads are authenticated encrypted binary objects. Provider accounts, URL paths, object sizes/counts and traffic timing remain observable.
 
-On another computer, launch NightBuoy, import the connection, provide suitable provider access, import your encrypted recovery file and unlock it. Provider permission and forum membership are separate. Never share an owner's unrestricted token with members. Provider credentials stay in companion memory and must be entered again after restarting; private profile/kit credential persistence is not implemented.
+On another computer, launch NightBuoy, enter the same storage URL, provide provider access if required, then import and unlock your encrypted identity. An authorized identity discovers its forum key without a connection file. A private `nb2:` access key permits current-epoch reading and pins the forum/branch; it does not grant membership or provider write permission. Provider permission and forum membership are separate. Never share an owner's unrestricted token with members. Provider credentials stay in companion memory and must be entered again after restarting; private profile/kit credential persistence is not implemented.
 
 `npm run dev:status` reports the launcher. `npm run dev:down` stops it and retains remote history. Pending posts exist only in the tab's memory: export them from Account before closing or signing out. The launcher writes only its explicitly chosen development PID/log files under ignored `.dev/`; the companion does not create application state files.
 
@@ -36,6 +36,18 @@ cargo build --release --locked
 ```
 
 Build the web assets **before** the executable to embed them. Copy the executable and your portable files to read-only media; the installed binary can run from another working directory without writing there. The browser and operating system can retain traces independently. Keep the identity file and passphrase separate.
+
+Running the executable without a command opens the local graphical interface in your system browser. `portable` keeps the companion in the foreground without opening a browser. The terminal client uses the same verified history and encrypted storage:
+
+```sh
+nightbuoy cli -f https://github.com/owner/repository --prompt-key
+nightbuoy cli -f https://forge.example/owner/repository -i recovery.json --provider-token-file token.txt
+nightbuoy cli --help
+```
+
+`-k KEY` is also supported, but exposes the key in process arguments; prefer hidden prompting or `--key-file`. Identity passphrases are prompted with hidden input. For S3 use `--provider-credentials-file` with a private JSON file containing `access_key` and `secret_key`. The terminal supports selection, reading, new boards/topics/replies, refresh and retained pending retries. After an unconfirmed submission, Ctrl+D twice in its draft consults verified history and permits explicit review/resubmission using the same object ID. Native encrypted pending export/import and identity creation remain in development. `--print` explicitly emits decrypted content to standard output.
+
+The opaque format deliberately rejects old plaintext-metadata storage at the same location. Use an explicitly selected new directory and preserved-history migration; it cannot make earlier Git commits secret retroactively. Existing user data is never silently rewritten.
 
 The default Docker target and `compose.yaml` run one portable client, with a read-only root filesystem and no database volume. The personal Compose example uses host networking and binds host loopback; on macOS/Windows prefer the native launcher unless Docker host networking is explicitly supported/enabled.
 
@@ -71,6 +83,6 @@ npx playwright test --config playwright.portable.config.ts
 npm test
 ```
 
-Portable provider fixtures exercise real HTTP/SDK conditional requests, concurrent writers, corruption, authentication, zero-frontend restart, read-only working directories, replica fallback and isolated recovery branches. A separate opt-in live GitHub check also creates and removes a temporary branch with synthetic encrypted data; see the audit ledger. These tests do not certify every hosted provider's ACLs, retention or conditional-write implementation. Legacy integration tests retain encryption, moderation, revocation and consensus regressions. This pilot caps a complete archive at 64 MiB; full snapshot retention currently grows with history and needs provider capacity monitoring.
+Portable provider fixtures exercise real HTTP/SDK conditional requests, concurrent writers, corruption, authentication, raw ciphertext inspection, revocation/discovery rotation, cold historical-key backup updates, zero-frontend restart, read-only working directories, replica fallback and isolated recovery branches. Native interoperability and a pseudo-terminal test verify recovery keys, decryption and rendering; browser tests exercise root-only joining, repeated private-key reads and encrypted recovery. A separate opt-in live GitHub check also creates and removes a temporary branch with synthetic encrypted data; see the audit ledger. These tests do not certify every hosted provider's ACLs, retention or conditional-write implementation. Legacy integration tests retain encryption, moderation, revocation and consensus regressions. This pilot caps a complete archive at 64 MiB; full snapshot retention currently grows with history and needs provider capacity monitoring.
 
 Licensed under [MIT](LICENSE). See [Contributing](CONTRIBUTING.md), [Security](SECURITY.md), [Code of Conduct](CODE_OF_CONDUCT.md) and [third-party notices](THIRD_PARTY_NOTICES.md).

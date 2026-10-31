@@ -12,12 +12,13 @@ The OEM product is NightBuoy only. Its five local palettes are Light, Dark, Midn
 
 ## 2. Experience
 
-1. Launch NightBuoy. A personal launcher binds its UI to loopback, normally localhost:8080.
-2. Open an existing forum connection file, or choose storage backends to create a new forum.
-3. Import an encrypted identity/portable kit and unlock it locally. New members create an identity and request membership.
-4. Fetch encrypted objects from reachable backends; verify fingerprints, signatures, membership history and the selected branch before decrypting.
-5. Encrypt/sign posts on the user's device and publish through the selected branch's active write backend.
-6. See remote confirmation and replica availability as separate states. Export pending work before closing an ephemeral session.
+1. Launch NightBuoy: the default graphical interface opens locally. `nightbuoy cli -f STORAGE_ROOT -k ACCESS_KEY` opens the terminal interface; hidden prompting and key files avoid command-line secret exposure.
+2. Use one basic connection form: storage directory/repository URL, optional access key, Join. Infer provider, repository/bucket, branch and path. Credentials are requested only when required; provider permission remains separate from forum key possession.
+3. Open and verify an existing encrypted forum, using the authorized identity/key. If the chosen storage location is confirmed empty, explicitly confirm creation. Authentication failures, missing provider permissions and network failures never mean "empty".
+4. Decrypt forum data and metadata locally, verify fingerprints/signatures/membership/branch, then display only authorized forums. No public forum-name catalog or compulsory connection-file step.
+5. Encrypt/sign posts or private conversations on the user's device, then publish conditionally to remote storage. Display remote confirmation separately from backup freshness.
+6. Presence is invisible by default and opt-in for authorized forum members. Encrypted 1:1/group conversations use participant-only keys and rotate when membership changes.
+7. Export pending work before ending an ephemeral session. Address/checkpoint bundles remain optional advanced backups; they never contain provider credentials or decryption keys in their public form.
 
 A read-only USB can carry the executable, web assets, a public connection file and an encrypted identity. Read-only application media does not prevent remote posting. Browser and operating-system traces are separate from application persistence; a no-database mode is not a forensic no-trace guarantee.
 
@@ -47,6 +48,20 @@ Public identity is pseudonymous and normally unique per community. Forge account
 Members require admission and encrypted grants before decrypting content. Administrator approval and history-sharing are explicit community choices. Administrators are peers; the founder has no permanent owner status. A revocation advances the encryption epoch and grants future keys only to remaining active identities. Copied plaintext and previously issued keys cannot be erased retroactively. Session expiry/logout must lock plaintext and discard in-memory key references; forensic secure erasure is not promised.
 
 ## 5. Remote object log and confirmation
+
+### Required opaque storage revision (implementation in progress)
+
+The earlier portable JSON format encrypts message payloads but exposes protocol metadata. It does **not** meet the user's clarified requirement and must not be advertised as zero plaintext or silently made public. Preserve old installations and use a distinct, explicitly versioned opaque format for new storage; previously published Git history cannot be retroactively made secret.
+
+No forum name, member identifier/public key, role, membership graph, conversation participants, timestamp, object type, thread hierarchy, control action, signed checkpoint or backend inventory may be readable in backend objects. Encrypt complete transaction records, certificates, snapshots and head payloads with AES-256-GCM, with purpose-bound authenticated data and size padding. Address immutable blobs by ciphertext hashes, using opaque directory/object names. Binary transport framing, randomized anonymous key envelopes, byte counts and conditional provider versions are protocol mechanics, not plaintext forum records.
+
+Derive a separate metadata key from the current random content epoch key with a fixed HMAC-SHA-256 domain separator. The browser retains content epoch keys and private identity keys; a trusted local Rust companion may receive only the derived metadata key in RAM for authenticated protocol validation. Hosted companions are consequently trusted with unlocked metadata, as their delivered JavaScript was already trusted with identity/content access; do not claim otherwise. New epoch grants exclude revoked identities and metadata encryption advances with the epoch. Old ciphertext/keys remain readable by prior holders.
+
+Bootstrap key envelopes contain only randomized recipient ciphertexts, no public recipient identifiers. Authorized identity keys or an explicitly supplied metadata capability unlock the head. Never put decryption material in public connection exports. Bind accepted heads to the exact signed archive and preserve checkpoint/branch rollback checks after decryption. Private identity exports must carry any remembered forum capability inside authenticated encryption. Discovery grants are bound by the signed genesis or an authorized membership/key control. Ordinary posts preserve that authenticated grant revision. Pseudorandom cover slots remain stable across that revision and its replicas, preventing intersections from separating cover from real slots. A changed opaque discovery point can reveal a grant revision occurred; no recipient identifier is public. This is not traffic-flow confidentiality.
+
+The normal UI is root URL plus authorized key/identity; there is no public list of forum names. Multiple forums can share a backend in separate opaque directories. Sharing/copying public ciphertext grants neither decryption nor signing authority. Repository owners/providers still know hosting-account identity, repository URLs, object counts, byte lengths and upload/access timing. Public forks can reveal relationships between copies. "Nobody knows anything" is not an achievable transport guarantee; no plaintext forum content or metadata in stored objects is the enforceable target.
+
+
 
 Storage is an adapter interface: bounded read, immutable object creation and conditional head replacement. Initial providers are GitHub, Forgejo, S3-compatible storage and a directory adapter for explicit local/offline copies and tests. More providers may be added without changing forum permissions or encryption. A backend unable to provide the required conditional-write semantics is a replica/read source, not an active write backend.
 
@@ -96,13 +111,17 @@ Companion APIs require exact Host/Origin handling, CSRF protection and bounded i
 
 ## 10. Packaging and compatibility
 
+Linux, Windows and macOS must have standalone binaries and appropriate direct installers/packages. The GUI is the default; the CLI entry opens a keyboard-driven TUI backed by the same protocol/crypto/permission core. Adapt established non-store release patterns from the user's existing project without copying customer branding. Planned artifacts include macOS application/archive, DMG/PKG; Windows portable archive and installer; Linux binary archives, DEB/RPM, Arch package, AppImage, sideloadable Flatpak/Snap; container images and package-manager metadata where supported. No app-store publishing, store credentials or store enrollment. Only claim a platform/package works when its build/install smoke has actually passed; missing signing/notarization credentials must be recorded rather than faked.
+
+
+
 Default packaging is one lightweight client/companion process plus embedded/static web assets, with no mandatory database volume or four-node network. A read-only-media build carries the executable/assets and user-supplied portable files. Always-on/public hosting is optional. OEM branding stays NightBuoy; separate post-install branding supplies only validated public metadata/CSS/images and does not fork application code.
 
 Preserve the existing forum and its signing state during implementation. Legacy mode remains explicitly identifiable and can read/export old archives. Migration is opt-in and must retain the old verified history, identity, grants and attachments, while recording the change in trust/ordering model. No automatic schema rewrite, volume deletion, root replacement or silent downgrade is allowed.
 
 ## 11. Implementation and acceptance matrix
 
-This matrix is deliberately conservative while the portable refactor is in progress.
+This matrix describes the first portable release. The newly approved opaque-metadata format, root/key basic form, shared GUI/TUI, presence/chat and cross-platform package matrix are in progress and supersede earlier convenience/privacy assumptions. Existing passing tests do not establish these new features.
 
 | Area | Evidence/status at architecture transition |
 | --- | --- |
@@ -125,7 +144,25 @@ Required checks include two concurrent clients posting through real conditional 
 
 Audit cycles must fix and regression-test critical/high findings, repeat adversarial checks and record evidence/remaining limits in docs/AUDIT.md. No finite test suite or agent review proves perfection, absolute anonymity or absence of unknown vulnerabilities. Production security claims require evidence appropriate to their scope.
 
-## 12. Supporting references
+## 12. Forum interaction and content retention
+
+The approved lean interaction scope includes formatted text with preview (emphasis, lists, quotes, code and spoilers), safe explicit links, emoji/reactions, encrypted uploaded images/files, watched topics, unread markers and a login catch-up view for missed replies/mentions/PMs. Thread locking, pins and reports supplement existing signed revisions/removals. No automatic external image fetch, embed or link preview may reveal a reader's network location to a post author. These additions remain work in progress until interface and authorization tests demonstrate them.
+
+Post edits append signed revisions; removal appends a signed tombstone rather than rewriting authenticated ancestry. Normal views show the current revision or removal. The encrypted original can remain readable to someone with retained keys/history. A signing identity authenticates an action; it does not prove the real-world person behind it. Permanent auditability and guaranteed erasure of the same content cannot both be promised. Exact revision-display policy remains configurable/design work; chain integrity must not depend on hiding old revisions.
+
+Attachments must become independently encrypted blobs outside permanent post snapshots before managed retention is offered. Administrators may set per-file, count and total upload limits, and optionally expire managed attachments after a chosen number of days (default: never). Expired references show an unavailable/expired state. Cleanup cannot guarantee deletion from provider version history, independent replicas or recipients' saved copies. Current inline attachments do not yet meet this retention design.
+
+Persistent private messages and incognito conversations are distinct modes, chosen visibly at creation. Both use participant-only encryption; forum administrators gain no special decryption privilege. Membership changes rotate chat keys. Incognito bodies/keys must stay outside permanent forum history, with transient local history cleared when leaving. Other participants can retain copies; closing one window cannot erase another person's device. Persistent PMs intentionally retain encrypted history. Presence remains opt-in and invisible by default; a historical storage provider is unsuitable for a promise that activity leaves no trace.
+
+Watched/read state and notification summaries are private member data, never a plaintext backend catalog or an administrator analytics feed. Login catch-up is computed after verified decryption and must distinguish the first visit from a known prior checkpoint. A disposable session cannot remember the previous visit without an explicitly retained encrypted state, identity export or private remote state. Email, push services and external notification accounts are outside the approved minimal feature scope.
+
+## 13. Current opaque/native implementation evidence
+
+The working tree now contains versioned padded binary frames, authenticated anonymous discovery, signed grant revisions, metadata rotation, encrypted archive exports, URL inference with repository/branch permission probes, S3 empty-location confirmation, same-location-only signed identity adoption, a native shared client and Ratatui terminal interface. Default portable GUI launch opens the validated local origin in the OS browser; explicit `portable` remains headless. CLI supports hidden access-key/passphrase prompts and private credential files. Native identity creation, encrypted pending-export UI, chat/presence, richer interaction features and platform packages remain release work; this is not a completion claim.
+
+Current executed checks include raw provider-byte inspection and CAS/rollback/restart fixtures for GitHub, Forgejo and S3; browser URL-only creation/cold identity sign-in/encrypted export/fork recovery; browser-to-native identity/ECDH/HKDF/RSA/content interoperability; frame prefix/grant/context tampering; stable cover-slot sets across posts; and transactional native rejection of an alternate forum. Expanded revocation, cold historical-key backup, private access-key refresh and actual pseudo-terminal checks are being consolidated. `docs/AUDIT.md` records the bounded independent review and outstanding gates.
+
+## 14. Supporting references
 
 Provider conditional operations: [GitHub Contents API](https://docs.github.com/en/rest/repos/contents#create-or-update-file-contents), [S3 conditional writes](https://docs.aws.amazon.com/AmazonS3/latest/userguide/conditional-writes.html), [Forgejo API](https://forgejo.org/docs/latest/user/api-usage/). Each adapter must verify the actual supported semantics; interchangeable storage does not imply interchangeable consistency guarantees.
 

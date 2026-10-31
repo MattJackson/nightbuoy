@@ -57,6 +57,8 @@ pub struct Device {
     pub id: String,
     pub sign: String,
     pub wrap: Value,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub discover: Option<String>,
 }
 impl Device {
     pub fn validate(&self) -> anyhow::Result<()> {
@@ -65,6 +67,10 @@ impl Device {
             "incorrect identity fingerprint"
         );
         p256::ecdsa::VerifyingKey::from_sec1_bytes(&decode(&self.sign)?)?;
+        if let Some(key) = &self.discover {
+            anyhow::ensure!(decode(key)?.len() == 65, "invalid discovery public key");
+            p256::PublicKey::from_sec1_bytes(&decode(key)?)?;
+        }
         anyhow::ensure!(
             self.wrap["kty"] == "RSA"
                 && self.wrap["e"] == "AQAB"
@@ -120,6 +126,8 @@ pub struct View {
     pub members: BTreeMap<String, Member>,
     pub grants: BTreeMap<u64, BTreeMap<String, String>>,
     pub publishers: BTreeSet<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub discovery: Option<crate::portable_protocol::Discovery>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -245,8 +253,10 @@ impl Data {
             status: "active".into(),
             floor: 1,
         };
+        let discovery = policy.portable.as_ref().and_then(|p| p.discovery.clone());
         let mut v = View {
             policy,
+            discovery,
             epoch: 1,
             members: BTreeMap::from([(device.id, member)]),
             grants: BTreeMap::new(),
@@ -254,6 +264,9 @@ impl Data {
         };
         grants(&mut v, &a[5])?;
         all_current_keys(&v)?;
+        if let Some(d) = &v.discovery {
+            d.validate(&v.members)?;
+        }
         anyhow::ensure!(
             serde_json::to_vec(&genesis)?.len() < MAX_CORE_BYTES,
             "genesis capacity exceeded"
@@ -515,6 +528,25 @@ impl Data {
                 }
             }
             _ => anyhow::bail!("unsupported control"),
+        }
+        let changes_grants = matches!(op, "admit" | "rotate" | "revoke" | "reconstitute");
+        if changes_grants {
+            if let Some(discovery) = p.get("discovery") {
+                let discovery: crate::portable_protocol::Discovery =
+                    serde_json::from_value(discovery.clone())?;
+                discovery.validate(&v.members)?;
+                v.discovery = Some(discovery);
+            } else {
+                anyhow::ensure!(
+                    v.discovery.is_none(),
+                    "signed discovery grants required for membership/key changes"
+                );
+            }
+        } else {
+            anyhow::ensure!(
+                p.get("discovery").is_none(),
+                "discovery grants may change only through signed key governance"
+            );
         }
         self.check_append_capacity(&s, true)?;
         self.archive.proof = None;

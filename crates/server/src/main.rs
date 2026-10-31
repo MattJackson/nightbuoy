@@ -2,12 +2,36 @@ use nightbuoy::{api, config::Config, replication, store::Store};
 use std::sync::{Arc, Mutex};
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    match std::env::args().nth(1).as_deref() {
+        Some("--help" | "-h") => return nightbuoy::terminal::run(&["--help".into()]).await,
+        Some("--version" | "-V") => {
+            println!("NightBuoy {}", env!("CARGO_PKG_VERSION"));
+            return Ok(());
+        }
+        Some("gui") => return nightbuoy::portable::run_gui().await,
+        Some(command)
+            if !matches!(
+                command,
+                "cli" | "portable" | "serve" | "check-config" | "verify-archive" | "reset"
+            ) =>
+        {
+            anyhow::bail!("Unknown command. Use nightbuoy --help.")
+        }
+        _ => {}
+    }
+    if std::env::args().nth(1).as_deref() == Some("cli") {
+        return nightbuoy::terminal::run(&std::env::args().skip(2).collect::<Vec<_>>()).await;
+    }
     if std::env::args().nth(1).as_deref() == Some("portable")
         || (std::env::args().nth(1).is_none()
             && std::env::var("NIGHTBUOY_DATA").is_err()
             && std::env::var("NIGHTBUOY_CONSENSUS_RPC").is_err())
     {
-        return nightbuoy::portable::run().await;
+        return if std::env::args().nth(1).is_none() {
+            nightbuoy::portable::run_gui().await
+        } else {
+            nightbuoy::portable::run().await
+        };
     }
     let config = Config::load()?;
     if std::env::args().nth(1).as_deref() == Some("check-config") {

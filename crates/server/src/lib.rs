@@ -13,3 +13,10 @@ pub mod portable_protocol;
 
 pub mod portable;
 pub mod remote;
+
+pub mod client;
+pub mod client_crypto;
+pub mod root_url;
+pub mod sealed_storage;
+
+pub mod terminal;
