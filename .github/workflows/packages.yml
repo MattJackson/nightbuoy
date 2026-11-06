@@ -36,7 +36,7 @@ jobs:
           targets: wasm32-unknown-unknown
       - run: npm ci
       - run: npm run build
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: embedded-web
           path: web/dist/
@@ -126,7 +126,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Extract/install packages and execute their embedded application
         run: node scripts/verify-packages.mjs '${{ matrix.target }}'
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: nightbuoy-${{ matrix.target }}
           path: |
