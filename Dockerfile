@@ -11,7 +11,7 @@ RUN rustup target add wasm32-unknown-unknown
 RUN --mount=type=cache,target=/usr/local/cargo/registry --mount=type=cache,target=/src/target cargo build --release --locked --target wasm32-unknown-unknown -p nightbuoy-proof && mkdir -p /out && cp target/wasm32-unknown-unknown/release/nightbuoy_proof.wasm /out/
 RUN wasm-bindgen /out/nightbuoy_proof.wasm --target web --out-dir /out/proof
 
-FROM node:26.13.0-bookworm-slim AS web-build
+FROM node:26.13.1-bookworm-slim AS web-build
 WORKDIR /src
 COPY package.json package-lock.json ./
 RUN npm ci --ignore-scripts
